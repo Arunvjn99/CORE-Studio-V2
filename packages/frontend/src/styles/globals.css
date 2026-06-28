@@ -1,0 +1,274 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ── shadcn/Radix component variables (HSL format — do not remove) ── */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+    --primary: 240 96% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+    --accent: 240 96% 96%;
+    --accent-foreground: 240 96% 40%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 91%;
+    --input: 0 0% 91%;
+    --ring: 240 96% 60%;
+    --radius: 0.5rem;
+
+    /* ── Core Studio semantic tokens (hex — single source of truth) ── */
+
+    /* Brand */
+    --cs-primary:           #5B5EF4;
+    --cs-primary-hover:     #4A4DD6;
+    --cs-primary-light:     #5B5EF415;  /* 8% tint */
+    --cs-primary-subtle:    #5B5EF408;  /* 3% tint */
+    --cs-focus-ring:        rgba(91,94,244,0.25);
+
+    /* Surfaces (5 levels) */
+    --cs-bg:                #FFFFFF;
+    --cs-surface:           #F7F7F7;
+    --cs-surface-subtle:    #F0F0F0;
+    --cs-surface-muted:     #E8E8E8;
+    --cs-surface-overlay:   #FFFFFF;
+
+    /* Text (5 levels) */
+    --cs-text:              #171717;
+    --cs-text-secondary:    #525252;
+    --cs-text-tertiary:     #8A8A8A;
+    --cs-text-soft:         #B0B0B0;
+    --cs-text-faint:        #CCCCCC;
+
+    /* Borders (3 levels) */
+    --cs-border:            #E5E5EA;
+    --cs-border-strong:     #D1D1D6;
+    --cs-border-soft:       #F0F0F4;
+
+    /* Status — triplets (color + surface + border) */
+    --cs-success:           #34C759;
+    --cs-success-surface:   #34C75912;
+    --cs-success-border:    #34C75930;
+
+    --cs-warning:           #FF9500;
+    --cs-warning-surface:   #FF950012;
+    --cs-warning-border:    #FF950030;
+
+    --cs-danger:            #FF3B30;
+    --cs-danger-surface:    #FF3B3012;
+    --cs-danger-border:     #FF3B3030;
+
+    --cs-info:              #0A84FF;
+    --cs-info-surface:      #0A84FF12;
+    --cs-info-border:       #0A84FF30;
+
+    /* Shadows */
+    --cs-shadow-xs:  0 1px 2px rgba(0,0,0,0.06);
+    --cs-shadow-sm:  0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+    --cs-shadow-md:  0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+    --cs-shadow-lg:  0 8px 24px rgba(0,0,0,0.10), 0 4px 8px rgba(0,0,0,0.04);
+    --cs-shadow-xl:  0 16px 48px rgba(0,0,0,0.12), 0 8px 16px rgba(0,0,0,0.06);
+    --cs-shadow-brand: 0 4px 16px rgba(91,94,244,0.25);
+
+    /* Radius */
+    --cs-radius-xs:      4px;
+    --cs-radius-sm:      6px;
+    --cs-radius-control: 8px;
+    --cs-radius-md:      10px;
+    --cs-radius-card:    12px;
+    --cs-radius-lg:      16px;
+    --cs-radius-panel:   16px;
+    --cs-radius-xl:      20px;
+    --cs-radius-full:    9999px;
+
+    /* Motion */
+    --cs-motion-fast:        120ms;
+    --cs-motion-normal:      200ms;
+    --cs-motion-slow:        300ms;
+    --cs-motion-ease-out:    cubic-bezier(0.0, 0, 0.2, 1);
+    --cs-motion-spring:      cubic-bezier(0.34, 1.56, 0.64, 1);
+    --cs-motion-interaction: background var(--cs-motion-fast) ease,
+                             border-color var(--cs-motion-fast) ease,
+                             color var(--cs-motion-fast) ease,
+                             box-shadow var(--cs-motion-fast) ease;
+    --cs-motion-transform:   transform var(--cs-motion-normal) var(--cs-motion-spring);
+
+    /* Fonts */
+    --cs-font-sans: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+    --cs-font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+    /* Agent identity colors */
+    --cs-agent-planner:  #8B5CF6;
+    --cs-agent-ux:       #0EA5E9;
+    --cs-agent-ui:       #10B981;
+    --cs-agent-review:   #F59E0B;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-white text-surface-900 font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--cs-border); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--cs-border-strong); }
+
+  /* Selection */
+  ::selection {
+    background-color: var(--cs-primary-light);
+    color: inherit;
+  }
+}
+
+@layer components {
+  /* Agent activity pulse */
+  .agent-pulse {
+    animation: agent-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* Glass card */
+  .glass {
+    @apply bg-white/80 backdrop-blur-xl border border-white/40;
+  }
+
+  /* Gradient text */
+  .gradient-text {
+    @apply bg-gradient-to-r from-brand-500 to-brand-700 bg-clip-text text-transparent;
+  }
+
+  /* Shimmer */
+  .shimmer {
+    background: linear-gradient(90deg, var(--cs-surface) 25%, var(--cs-surface-subtle) 50%, var(--cs-surface) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+
+  /* Focus ring */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1;
+  }
+
+  /* Clickable row */
+  .row-hover {
+    @apply hover:bg-surface-50 transition-colors duration-100 cursor-pointer;
+  }
+
+  /* Sidebar item */
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--cs-radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--cs-text-secondary);
+    transition: var(--cs-motion-interaction);
+    cursor: pointer;
+  }
+  .sidebar-item:hover {
+    background: var(--cs-surface-subtle);
+    color: var(--cs-text);
+  }
+  .sidebar-item-active {
+    background: var(--cs-primary-light);
+    color: var(--cs-primary);
+  }
+  .sidebar-item-active:hover {
+    background: var(--cs-primary-light);
+    color: var(--cs-primary);
+  }
+
+  /* Artifact card */
+  .artifact-card {
+    background: white;
+    border: 1px solid var(--cs-border);
+    border-radius: var(--cs-radius-card);
+    padding: 16px;
+    box-shadow: var(--cs-shadow-xs);
+    transition: border-color var(--cs-motion-fast) ease, box-shadow var(--cs-motion-fast) ease;
+    cursor: pointer;
+  }
+  .artifact-card:hover {
+    border-color: var(--cs-primary);
+    box-shadow: var(--cs-shadow-sm);
+  }
+
+  /* Agent status badge */
+  .agent-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: var(--cs-radius-full);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  /* Status surfaces */
+  .status-success { background: var(--cs-success-surface); color: var(--cs-success); border: 1px solid var(--cs-success-border); }
+  .status-warning { background: var(--cs-warning-surface); color: var(--cs-warning); border: 1px solid var(--cs-warning-border); }
+  .status-danger  { background: var(--cs-danger-surface);  color: var(--cs-danger);  border: 1px solid var(--cs-danger-border);  }
+  .status-info    { background: var(--cs-info-surface);    color: var(--cs-info);    border: 1px solid var(--cs-info-border);    }
+
+  /* Panel card using design tokens */
+  .cs-card {
+    background: var(--cs-bg);
+    border: 1px solid var(--cs-border);
+    border-radius: var(--cs-radius-card);
+    box-shadow: var(--cs-shadow-sm);
+  }
+  .cs-card-elevated {
+    background: var(--cs-surface-overlay);
+    border-radius: var(--cs-radius-panel);
+    box-shadow: var(--cs-shadow-lg);
+  }
+}
+
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+/* Markdown prose overrides */
+.prose { color: var(--cs-text-secondary); }
+.prose h1, .prose h2, .prose h3 { color: var(--cs-text); font-weight: 600; }
+.prose code {
+  font-family: var(--cs-font-mono);
+  font-size: 12px;
+  background: var(--cs-surface);
+  padding: 2px 6px;
+  border-radius: var(--cs-radius-xs);
+  color: var(--cs-primary);
+}

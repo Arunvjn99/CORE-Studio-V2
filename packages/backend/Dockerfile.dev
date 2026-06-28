@@ -1,0 +1,19 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-local.txt .
+RUN pip install --no-cache-dir -r requirements-local.txt
+
+# Pre-download the ChromaDB ONNX embedding model so startup is instant
+RUN python3 -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; DefaultEmbeddingFunction()"
+
+COPY . .
+
+EXPOSE 8000
+CMD ["python3", "server_local.py"]

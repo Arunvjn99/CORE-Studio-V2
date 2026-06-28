@@ -1,0 +1,32 @@
+# Minimal local dev requirements (no Postgres, no Redis needed)
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+
+# SQLite async (no Postgres install needed)
+sqlalchemy[asyncio]==2.0.36
+aiosqlite==0.20.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# AI (optional — mocked if no key)
+anthropic>=0.96.0
+
+# Validation
+pydantic==2.10.3
+pydantic-settings==2.6.1
+email-validator==2.2.0
+
+# File Processing
+aiofiles==24.1.0
+
+# HTTP Client
+httpx==0.28.0
+
+# Vector / RAG
+chromadb>=0.5.0
+
+# Utilities
+python-dotenv==1.0.1
