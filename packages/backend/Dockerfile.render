@@ -30,4 +30,8 @@ COPY knowledge ./knowledge
 WORKDIR /app/packages/backend
 
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn server_local:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# `exec` replaces the shell with uvicorn as PID 1 — without it, `sh` stays PID 1 and
+# some platform port-scanners (observed on Render) that inspect PID 1's sockets never
+# see the port uvicorn (a child process) actually bound, even though it's listening
+# and answering requests fine.
+CMD ["sh", "-c", "exec uvicorn server_local:app --host 0.0.0.0 --port ${PORT:-8000}"]
