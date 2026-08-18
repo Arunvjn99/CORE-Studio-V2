@@ -4,10 +4,14 @@
 # Dockerfile (which builds app/main.py against Postgres/Redis for the docker-compose
 # stack) so neither deployment path disturbs the other.
 #
-# Built from the REPO ROOT as build context (not packages/backend) so the top-level
-# knowledge/ folder is available inside the image — server_local.py resolves it as
-# BASE_DIR.parent.parent / "knowledge", i.e. two directories up from server_local.py,
-# so the container mirrors the monorepo's packages/backend + knowledge/ layout exactly.
+# Build context is scoped to packages/backend/ (Render's rootDir) — the proven-reliable
+# configuration for this platform's port auto-detection (a repo-root-scoped context
+# triggered a persistent "no open ports detected" false negative on Render, even with
+# the exact same CMD/EXPOSE). Since that scoping can't COPY the top-level knowledge/
+# folder directly, it's fetched via a sparse git clone at build time instead, into a
+# path that still matches how server_local.py resolves it
+# (BASE_DIR.parent.parent / "knowledge", two directories up from server_local.py) by
+# mirroring the monorepo's packages/backend + knowledge/ layout inside the image.
 #
 # Render free-tier disk is ephemeral — the SQLite file and the seeded ChromaDB store
 # reset on each redeploy/restart. For persistent data, swap DATABASE_URL-style storage
@@ -19,21 +23,22 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/backend/requirements-local.txt ./packages/backend/requirements-local.txt
+COPY requirements-local.txt ./packages/backend/requirements-local.txt
 RUN pip install --no-cache-dir -r packages/backend/requirements-local.txt
 
-COPY packages/backend ./packages/backend
-COPY knowledge ./knowledge
+COPY . ./packages/backend
+
+# Fetch just the knowledge/ folder from the public repo (build context here is scoped
+# to packages/backend, so it can't be reached via a local COPY ../.. path).
+RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/Arunvjn99/CORE-Studio-V2.git /tmp/repo \
+    && cd /tmp/repo && git sparse-checkout set knowledge \
+    && cp -r knowledge /app/knowledge \
+    && rm -rf /tmp/repo
 
 WORKDIR /app/packages/backend
 
-EXPOSE 10000
-# Pure exec-form CMD (no shell wrapper at all) so uvicorn is PID 1 from the very start —
-# some platform port-scanners (observed on Render) inspect PID 1's sockets and never see
-# a port bound by a child process under `sh -c "..."`, even though it's listening and
-# answering requests fine. Render injects PORT=10000 by default for Docker web services;
-# hardcoded here (not read from $PORT, which needs shell expansion) to keep the exec form
-# pure. Override by setting this service's port in the Render dashboard if it ever changes.
-CMD ["uvicorn", "server_local:app", "--host", "0.0.0.0", "--port", "10000"]
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn server_local:app --host 0.0.0.0 --port ${PORT:-8000}"]
