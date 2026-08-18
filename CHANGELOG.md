@@ -6,6 +6,23 @@ All notable changes to CORE Studio V2 are documented in this file. Format follow
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-08-18
+
+### Fixed
+- Production Docker images (`packages/backend/Dockerfile`,
+  `packages/frontend/Dockerfile`) failed to build:
+  - `requirements.txt` pinned `anthropic==0.40.0` and `langchain-core==0.3.24`, which
+    conflict with `langchain-anthropic==0.3.3`'s own requirements
+    (`anthropic>=0.41.0`, `langchain-core>=0.3.30`). Loosened both to compatible ranges.
+  - `packages/frontend/package-lock.json` had drifted out of sync with `package.json`
+    (missing optional platform packages), which `npm ci` correctly rejects. Regenerated
+    inside a `node:20-alpine` container so it matches the platform the image actually
+    builds on.
+  - `autoprefixer` is required by `postcss.config.js` but was never listed in
+    `package.json` — added it as a dev dependency.
+- Verified: both `core-studio-backend:2.3.1` and `core-studio-frontend:2.3.1` build
+  cleanly end-to-end.
+
 ## [2.3.0] — 2026-08-18
 
 ### Added
@@ -96,7 +113,8 @@ All notable changes to CORE Studio V2 are documented in this file. Format follow
 - Design system registry and token builder, design canvas, flow canvas, WebSocket
   streaming agent updates.
 
-[Unreleased]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.3.1...HEAD
+[2.3.1]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Arunvjn99/CORE-Studio-V2/compare/v2.0.0...v2.1.0
