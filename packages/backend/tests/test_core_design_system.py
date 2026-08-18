@@ -342,5 +342,79 @@ def test_extract_html_strips_markdown_fences_around_raw_html():
     assert "```" not in html
 
 
+# ── Vision-provider decoupling ──────────────────────────────────────────
+# Regression guards for the fix that makes image-reading accuracy (recreate/redesign)
+# independent of AI_BACKEND_MODE, so it isn't silently downgraded to Ollama just
+# because text generation is set to local mode.
+import server_local as _sl
+
+
+def _reset_vision_env(monkeypatch, *, anthropic="", openai="", gemini="", ollama=False, override="auto"):
+    monkeypatch.setattr(_sl, "ANTHROPIC_API_KEY", anthropic)
+    monkeypatch.setattr(_sl, "OPENAI_API_KEY", openai)
+    monkeypatch.setattr(_sl, "GEMINI_API_KEY", gemini)
+    monkeypatch.setattr(_sl, "HAS_OLLAMA", ollama)
+    monkeypatch.setattr(_sl, "VISION_PROVIDER", override)
+    monkeypatch.setitem(_sl._VISION_KEY, "anthropic", anthropic)
+    monkeypatch.setitem(_sl._VISION_KEY, "openai", openai)
+    monkeypatch.setitem(_sl._VISION_KEY, "gemini", gemini)
+
+
+def test_resolve_vision_provider_prefers_anthropic_over_ollama(monkeypatch):
+    # Even when text generation is routed to Ollama (AI_BACKEND_MODE=ollama), vision
+    # must still pick the cloud key if one is configured — that's the whole point of
+    # decoupling vision from the text backend mode.
+    _reset_vision_env(monkeypatch, anthropic="sk-ant-real", ollama=True)
+    assert _sl.resolve_vision_provider() == "anthropic"
+
+
+def test_resolve_vision_provider_falls_back_through_priority_order(monkeypatch):
+    _reset_vision_env(monkeypatch, openai="sk-openai-real", ollama=True)
+    assert _sl.resolve_vision_provider() == "openai"
+
+    _reset_vision_env(monkeypatch, gemini="sk-gemini-real", ollama=True)
+    assert _sl.resolve_vision_provider() == "gemini"
+
+    _reset_vision_env(monkeypatch, ollama=True)
+    assert _sl.resolve_vision_provider() == "ollama"
+
+    _reset_vision_env(monkeypatch, ollama=False)
+    assert _sl.resolve_vision_provider() == "none"
+
+
+def test_resolve_vision_provider_honors_explicit_override(monkeypatch):
+    _reset_vision_env(monkeypatch, anthropic="sk-ant-real", gemini="sk-gemini-real",
+                       ollama=True, override="gemini")
+    assert _sl.resolve_vision_provider() == "gemini"
+
+
+def test_resolve_vision_provider_override_falls_back_to_auto_when_unavailable(monkeypatch):
+    # Pinning VISION_PROVIDER=openai with no OpenAI key configured must not hard-fail —
+    # it degrades to auto-detection rather than silently returning "none" when another
+    # backend is actually usable.
+    _reset_vision_env(monkeypatch, anthropic="sk-ant-real", override="openai")
+    assert _sl.resolve_vision_provider() == "anthropic"
+
+
+def test_vision_backend_label_reflects_actual_resolved_provider(monkeypatch):
+    # Regression guard for the literal bug reported: the "Reading reference image with
+    # llava:7b..." progress message was hardcoded regardless of which backend actually
+    # ran. The label must name the real model/provider that resolve_vision_provider()
+    # picked, not a fixed string.
+    _reset_vision_env(monkeypatch, anthropic="sk-ant-real", ollama=True)
+    label = _sl.vision_backend_label()
+    assert "llava" not in label
+    assert "anthropic" in label
+
+    _reset_vision_env(monkeypatch, ollama=True)
+    label = _sl.vision_backend_label()
+    assert "ollama" in label
+
+
+def test_vision_backend_label_reports_none_when_unavailable(monkeypatch):
+    _reset_vision_env(monkeypatch, ollama=False)
+    assert _sl.vision_backend_label() == "no vision backend available"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

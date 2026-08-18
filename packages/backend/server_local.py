@@ -74,6 +74,17 @@ GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE
 OLLAMA_BASE_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 AI_BACKEND_MODE   = os.getenv("AI_BACKEND_MODE", "auto").lower()
 
+# Vision (image analysis) is deliberately resolved INDEPENDENTLY of AI_BACKEND_MODE/
+# CLOUD_PROVIDER below. AI_BACKEND_MODE governs which model handles TEXT generation
+# (planning/UI/code) and a user may reasonably pick "ollama" there to save cost — but
+# reading an uploaded reference image accurately (the "recreate"/"redesign" flow) is a
+# different job with a much bigger quality gap between local and cloud models, so it
+# always prefers the best available vision model regardless of the text-generation
+# choice. VISION_PROVIDER lets you pin a specific one; "auto" (default) picks the best
+# available key in priority order (anthropic > openai > gemini), falling back to local
+# Ollama (llava) only when no cloud key is configured at all.
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "auto").strip().lower()
+
 
 def _detect_provider() -> str:
     """Detect which cloud provider to use based on which key is set."""
@@ -1781,10 +1792,12 @@ async def upload_knowledge(
     async with aiofiles.open(str(file_path), "wb") as f:
         await f.write(content)
 
-    # Extract text — handwritten images go through LLava OCR
+    # Extract text — handwritten images go through vision OCR (best available backend,
+    # not necessarily Ollama — see resolve_vision_provider()).
     if is_handwritten == "true" and ext in ("png", "jpg", "jpeg", "webp"):
-        if not HAS_OLLAMA:
-            raise HTTPException(400, "Handwritten reading requires Ollama + llava:7b")
+        if resolve_vision_provider() == "none":
+            raise HTTPException(400, "Handwritten reading requires a configured vision "
+                                      "backend — set a cloud AI API key or run Ollama with llava.")
         b64 = base64.b64encode(content).decode("utf-8")
         text = await _extract_handwritten(b64)
     else:
@@ -2128,34 +2141,77 @@ def _vision_ollama(b64_image: str, prompt: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-async def llm_chat_vision(b64_image: str, prompt: str) -> str:
-    """Vision call — uses cloud provider's vision model if available, else LLava."""
-    loop = asyncio.get_event_loop()
+_VISION_FN = {
+    "anthropic": _vision_anthropic,
+    "openai": _vision_openai,
+    "gemini": _vision_gemini,
+}
+_VISION_KEY = {
+    "anthropic": ANTHROPIC_API_KEY,
+    "openai": OPENAI_API_KEY,
+    "gemini": GEMINI_API_KEY,
+}
+_VISION_MODEL_NAME = {
+    "anthropic": lambda: PROVIDER_MODELS["anthropic"]["standard"],
+    "openai": lambda: PROVIDER_MODELS["openai"]["standard"],
+    "gemini": lambda: PROVIDER_MODELS["gemini"]["standard"],
+    "ollama": lambda: OLLAMA_MODELS["vision"],
+}
 
-    # Always try cloud vision first — it's dramatically better for design recreation.
-    # BUG FIXED: this used to gate on `ANTHROPIC_API_KEY` regardless of which provider
-    # was actually active, so an OpenAI- or Gemini-configured deployment would silently
-    # skip cloud vision (since ANTHROPIC_API_KEY would be unset) and fall through to the
-    # much weaker local llava:7b model every time — the exact failure mode that caused
-    # inaccurate "recreate" results even when a good cloud vision model was configured.
-    vision_fn = {
-        "anthropic": _vision_anthropic,
-        "openai": _vision_openai,
-        "gemini": _vision_gemini,
-    }.get(CLOUD_PROVIDER)
-    provider_key = {
-        "anthropic": ANTHROPIC_API_KEY,
-        "openai": OPENAI_API_KEY,
-        "gemini": GEMINI_API_KEY,
-    }.get(CLOUD_PROVIDER)
-    if vision_fn and provider_key:
-        try:
-            return await loop.run_in_executor(None, vision_fn, b64_image, prompt)
-        except Exception as e:
-            print(f"[vision] Cloud vision failed ({CLOUD_PROVIDER}): {e}")
-            # fall through to Ollama only if available
 
+def resolve_vision_provider() -> str:
+    """Which backend actually handles image analysis for this request — independent
+    of AI_BACKEND_MODE/CLOUD_PROVIDER (see the VISION_PROVIDER comment above). Purely
+    driven by which API keys are configured / whether Ollama is reachable; no
+    hardcoded provider choice."""
+    if VISION_PROVIDER in _VISION_FN and _VISION_KEY.get(VISION_PROVIDER):
+        return VISION_PROVIDER
+    if VISION_PROVIDER == "ollama" and HAS_OLLAMA:
+        return "ollama"
+    if VISION_PROVIDER != "auto":
+        print(f"[vision] VISION_PROVIDER={VISION_PROVIDER!r} requested but unavailable "
+              f"(no key / not reachable) — falling back to auto-detection.")
+
+    # auto: best available cloud key wins, in quality-priority order; local Ollama
+    # (llava) is the last resort, only used when no cloud key is configured at all.
+    for provider in ("anthropic", "openai", "gemini"):
+        if _VISION_KEY.get(provider):
+            return provider
     if HAS_OLLAMA:
+        return "ollama"
+    return "none"
+
+
+def vision_backend_label() -> str:
+    """Human-readable 'provider — model' string for progress/status messages, so the
+    UI always reflects the model that will actually run instead of a hardcoded name."""
+    provider = resolve_vision_provider()
+    if provider == "none":
+        return "no vision backend available"
+    try:
+        model = _VISION_MODEL_NAME[provider]()
+    except Exception:
+        model = provider
+    return f"{model} ({provider})"
+
+
+async def llm_chat_vision(b64_image: str, prompt: str) -> str:
+    """Vision call — routes independently to the best available vision backend (see
+    resolve_vision_provider), not tied to whatever AI_BACKEND_MODE governs text calls."""
+    loop = asyncio.get_event_loop()
+    provider = resolve_vision_provider()
+
+    if provider in _VISION_FN:
+        try:
+            return await loop.run_in_executor(None, _VISION_FN[provider], b64_image, prompt)
+        except Exception as e:
+            print(f"[vision] Cloud vision failed ({provider}): {e}")
+            # fall through to Ollama only if available
+            if HAS_OLLAMA:
+                return await loop.run_in_executor(None, _vision_ollama, b64_image, prompt)
+            return json.dumps({"error": f"Vision provider {provider} failed: {e}"})
+
+    if provider == "ollama" and HAS_OLLAMA:
         return await loop.run_in_executor(None, _vision_ollama, b64_image, prompt)
 
     return json.dumps({"error": "No vision backend available"})
@@ -2780,6 +2836,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
             select_model=select_model,
             rag_query=rag_query,
             progress_callback=progress,
+            vision_backend_label=vision_backend_label(),
         )
 
         # Store plan in session + generation
@@ -3241,8 +3298,9 @@ async def generate_design_flow(
     # Process optional reference image
     image_b64 = None
     if image is not None:
-        if not HAS_OLLAMA:
-            raise HTTPException(400, "Vision requires Ollama with llava:7b")
+        if resolve_vision_provider() == "none":
+            raise HTTPException(400, "Reading a reference image requires a configured vision "
+                                      "backend — set a cloud AI API key or run Ollama with llava.")
         ext = image.filename.rsplit(".", 1)[-1].lower() if "." in image.filename else "png"
         if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
             raise HTTPException(400, f"Image format .{ext} not supported")
@@ -3698,7 +3756,11 @@ async def ai_status(user: User = Depends(get_current_user)):
             "ollama": HAS_OLLAMA,
         },
         "active_models": CLOUD_MODELS if AI_BACKEND == "cloud" else OLLAMA_MODELS,
-        "vision_enabled": AI_BACKEND == "cloud" or HAS_OLLAMA,
+        # Vision (image analysis for "recreate"/"redesign") is resolved independently of
+        # AI_BACKEND_MODE above — see resolve_vision_provider() / VISION_PROVIDER env var.
+        "vision_enabled": resolve_vision_provider() != "none",
+        "vision_provider": resolve_vision_provider(),
+        "vision_backend": vision_backend_label(),
     }
 
 

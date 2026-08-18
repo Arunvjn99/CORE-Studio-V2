@@ -49,6 +49,7 @@ async def plan_flow(
     select_model,
     rag_query,
     progress_callback=None,
+    vision_backend_label: Optional[str] = None,
 ) -> dict:
     """
     Phase 1 — agent analyzes, thinks, and proposes a screen plan.
@@ -63,9 +64,14 @@ async def plan_flow(
     image_analysis = None
     if reference_image_b64 and reference_mode:
         if progress_callback:
+            # vision_backend_label reflects whichever backend will actually run
+            # (resolve_vision_provider() in server_local.py) — never a hardcoded
+            # model name, since that silently went stale whenever cloud vision was
+            # actually in use instead of the local fallback.
+            label = vision_backend_label or "the configured vision backend"
             await progress_callback({
                 "type": "step", "phase": "plan", "step": "vision",
-                "message": "🔍 Reading reference image with llava:7b...",
+                "message": f"🔍 Reading reference image with {label}...",
             })
         from app.agents.design_complete.flow_generator import _build_vision_prompt
         vision_prompt = _build_vision_prompt(reference_mode, prompt)
