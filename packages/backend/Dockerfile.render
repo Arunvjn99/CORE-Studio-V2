@@ -29,9 +29,11 @@ COPY knowledge ./knowledge
 
 WORKDIR /app/packages/backend
 
-EXPOSE 8000
-# `exec` replaces the shell with uvicorn as PID 1 — without it, `sh` stays PID 1 and
-# some platform port-scanners (observed on Render) that inspect PID 1's sockets never
-# see the port uvicorn (a child process) actually bound, even though it's listening
-# and answering requests fine.
-CMD ["sh", "-c", "exec uvicorn server_local:app --host 0.0.0.0 --port ${PORT:-8000}"]
+EXPOSE 10000
+# Pure exec-form CMD (no shell wrapper at all) so uvicorn is PID 1 from the very start —
+# some platform port-scanners (observed on Render) inspect PID 1's sockets and never see
+# a port bound by a child process under `sh -c "..."`, even though it's listening and
+# answering requests fine. Render injects PORT=10000 by default for Docker web services;
+# hardcoded here (not read from $PORT, which needs shell expansion) to keep the exec form
+# pure. Override by setting this service's port in the Render dashboard if it ever changes.
+CMD ["uvicorn", "server_local:app", "--host", "0.0.0.0", "--port", "10000"]
