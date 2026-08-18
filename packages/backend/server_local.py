@@ -1574,10 +1574,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CORE Studio V2", version="2.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=[
+# CORS origins: local dev defaults + any extra origins from CORS_ALLOWED_ORIGINS
+# (comma-separated, e.g. a deployed Vercel frontend URL) — additive, never hardcoded
+# to a specific deployment.
+_default_cors_origins = [
     "http://localhost:3000", "http://127.0.0.1:3000",
     "http://localhost:3001", "http://127.0.0.1:3001",
-], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+]
+_extra_cors_origins = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_default_cors_origins + _extra_cors_origins,
+                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
