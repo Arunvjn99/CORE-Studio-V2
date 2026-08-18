@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: -apple-system, sans-serif; font-size: 12px; margin: 0; padding: 16px; color: #292929; }
+    h2 { font-size: 13px; margin: 0 0 8px; }
+    p { color: #575757; margin: 0 0 12px; line-height: 1.4; }
+    textarea { width: 100%; height: 220px; box-sizing: border-box; font-family: monospace; font-size: 11px;
+      border: 1px solid #E0E0E0; border-radius: 4px; padding: 8px; resize: vertical; }
+    button { margin-top: 12px; width: 100%; padding: 10px; background: #004DCB; color: #FFFFFF; border: none;
+      border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    button:disabled { background: #96B6EA; cursor: not-allowed; }
+    #status { margin-top: 8px; font-size: 11px; color: #575757; }
+  </style>
+</head>
+<body>
+  <h2>CORE Studio Import</h2>
+  <p>Paste the JSON exported from CORE Studio's "Figma" button, then click Import. Each screen
+     becomes a real, editable auto-layout frame.</p>
+  <textarea id="payload" placeholder='{"screens": [...], "version": "3.0"}'></textarea>
+  <button id="import">Import</button>
+  <div id="status"></div>
+
+  <script>
+    const textarea = document.getElementById("payload");
+    const button = document.getElementById("import");
+    const status = document.getElementById("status");
+
+    button.onclick = () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(textarea.value);
+      } catch (e) {
+        status.textContent = "Invalid JSON: " + e.message;
+        return;
+      }
+      button.disabled = true;
+      status.textContent = "Importing…";
+      parent.postMessage({ pluginMessage: { type: "import", payload: parsed } }, "*");
+    };
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+      if (msg.type === "done") {
+        status.textContent = `Imported ${msg.count} screen(s).`;
+        button.disabled = false;
+      } else if (msg.type === "error") {
+        status.textContent = "Error: " + msg.message;
+        button.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

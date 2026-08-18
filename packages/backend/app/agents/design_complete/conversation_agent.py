@@ -117,7 +117,25 @@ async def plan_flow(
 
     image_block = ""
     if image_analysis:
-        image_block = f"REFERENCE IMAGE ANALYSIS:\n{json.dumps(image_analysis, indent=2)[:1000]}\n\n"
+        # Build the block field-by-field rather than blind-truncating json.dumps() output —
+        # the naive [:1000] slice used to cut off exact_title_text/what_to_recreate whenever
+        # components_detected (which comes first in dict order) was long enough to eat the
+        # whole budget, silently dropping the single most important field for recreation.
+        title = image_analysis.get("exact_title_text") or image_analysis.get("what_to_recreate", "")
+        labels = image_analysis.get("exact_labels") or []
+        what_to_recreate = image_analysis.get("what_to_recreate", "")
+        rest = {
+            k: v for k, v in image_analysis.items()
+            if k not in ("exact_title_text", "exact_labels", "what_to_recreate")
+        }
+        image_block = (
+            "REFERENCE IMAGE ANALYSIS (verbatim transcription — use these exact words, "
+            "do not substitute a different-but-similar screen or label):\n"
+            f"EXACT TITLE: {title}\n"
+            f"EXACT VISIBLE LABELS: {', '.join(labels[:40])}\n"
+            f"WHAT TO RECREATE: {what_to_recreate}\n"
+            f"OTHER DETAILS: {json.dumps(rest, indent=2)[:1500]}\n\n"
+        )
 
     # ── Step D: Generate the plan with thought process ───────────────────────
     if progress_callback:
@@ -135,6 +153,21 @@ async def plan_flow(
         f"genuinely needs more or fewer for a coherent flow."
     )
 
+    recreate_rule = ""
+    if reference_mode == "recreate" and image_analysis:
+        exact_title = image_analysis.get("exact_title_text", "")
+        recreate_rule = f"""
+RECREATE MODE — NON-NEGOTIABLE:
+The user attached a reference screenshot and wants it recreated, not reimagined. The FIRST
+planned screen's "name" MUST be exactly "{exact_title}" (the transcribed title from the
+reference image) — never a different, "similar", or more-generic screen name from the same
+product family, even if that other name feels more familiar from the domain knowledge above.
+key_elements for that screen MUST list the actual labels/columns/components from
+EXACT VISIBLE LABELS above, not invented ones. If your first instinct produces a screen name
+that doesn't match "{exact_title}" verbatim, that is a sign you are pattern-matching to a
+generic domain screen instead of the actual reference — stop and use the exact title.
+"""
+
     plan_prompt = f"""You are planning a design sprint. Analyze the user's request and propose a structured plan.
 
 USER REQUEST: {prompt}
@@ -146,7 +179,7 @@ SCREEN COUNT: {count_instruction}
 
 {rag_context}
 
-{convo_block}{existing_block}{image_block}
+{convo_block}{existing_block}{image_block}{recreate_rule}
 
 STEP 1 — DECIDE SCREEN TYPE (do this first, before planning screens):
 Read the user request carefully. Ask yourself: "Is this a website, a web dashboard/app, a mobile app, or a tablet app?"
@@ -396,6 +429,15 @@ Keep the same overall layout and purpose, but fix UX/UI issues:
 {user_prompt}
 Apply better spacing, hierarchy, contrast, and modern polish while keeping it recognizable as the same screen."""
 
+    # Ask for RAW HTML directly rather than JSON-wrapped HTML. This used to request
+    # {"html": "...", "design_notes": ..., ...} and parse it as JSON — but a full page
+    # of HTML embedded as a JSON string value is exactly the case json.loads is most
+    # likely to choke on (embedded quotes, real newlines, markdown code fences around
+    # the JSON), and every fallback path that existed to handle that failure either
+    # truncated at the first closing tag or left literal "\n"/"\"" escape sequences
+    # un-decoded in the output. The rest of this codebase's HIFI/wireframe generation
+    # (flow_generator.py) already reliably asks for raw HTML with no JSON wrapper —
+    # this mirrors that proven pattern instead of inventing a new failure mode.
     prompt = f"""{instruction}
 
 {ds_block}
@@ -403,28 +445,31 @@ Apply better spacing, hierarchy, contrast, and modern polish while keeping it re
 DESIGN CONTEXT (from knowledge base):
 {rag_context[:800]}
 
-Output ONLY valid JSON:
-{{
-  "html": "Complete self-contained HTML with Tailwind CSS classes that visually matches the image. Use exact hex colors sampled from the image. Make it a full screen layout.",
-  "design_notes": "What you matched / changed",
-  "components_used": ["list of components"],
-  "fidelity_estimate": "How closely this matches the original (e.g. '90%')"
-}}
+CRITICAL — output the ENTIRE page, every section, every row of every table, every card —
+do not abbreviate, truncate, summarize, or omit content partway through. A partial screen
+(e.g. header only, or a table with 2 rows instead of the actual count visible) is a failure.
 
-Output complete, ready-to-render HTML. Real content matching the image. No <!-- comments -->."""
+Output ONLY the complete, ready-to-render HTML starting with <!DOCTYPE html> or <div. Use exact
+hex colors sampled from the image. Real content matching the image, not placeholders.
+No markdown fences. No JSON. No <!-- comments -->. No explanation before or after the HTML."""
 
     raw = await llm_chat_vision(reference_b64, prompt)
-    parsed = _parse_json(raw)
-    if parsed and parsed.get("html"):
-        parsed["model_used"] = "vision (recreate)"
-        return parsed
 
-    # Extract HTML if JSON parse failed
-    import re as _re
-    m = _re.search(r"<(?:div|section|main|html|!DOCTYPE)[\s\S]*?</(?:div|section|main|html)>", raw)
-    if m:
-        return {"html": m.group(), "design_notes": "Vision recreation", "components_used": [], "model_used": "vision"}
-    return {"html": "", "error": "Vision recreation failed to produce HTML", "model_used": "vision", "raw": raw[:300]}
+    # Reuse the same robust extractor the rest of this app already relies on
+    # (flow_generator._extract_html) for stripping any stray markdown fences the
+    # model might still add despite the instruction above.
+    from app.agents.design_complete.flow_generator import _extract_html
+
+    html = _extract_html(raw)
+    if not html or len(html) < 300:
+        return {"html": "", "error": "Vision recreation failed to produce HTML", "model_used": "vision", "raw": raw[:300]}
+
+    return {
+        "html": html,
+        "design_notes": "Vision recreation",
+        "components_used": [],
+        "model_used": "vision (recreate)",
+    }
 
 
 # ── Phase 3: Regenerate a single screen (versioning) ──────────────────────────

@@ -1,0 +1,14 @@
+{
+  "name": "core-studio-figma-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Companion Figma plugin: imports CORE Studio's exported node tree as real auto-layout frames via the official Figma Plugin API.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.100.0",
+    "typescript": "^5.5.0"
+  }
+}

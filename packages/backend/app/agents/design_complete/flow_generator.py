@@ -48,6 +48,73 @@ FORBIDDEN:
 
 Output raw HTML starting with <div. No markdown fences. No JSON. No HTML comments."""
 
+# CORE 2.0 — faithful reproduction mode. Used instead of HIFI_SYSTEM whenever
+# design_system_id == "core-2": the goal here is the OPPOSITE of the generic
+# system above — indistinguishable from the company's own existing screens,
+# not a generic modern SaaS look.
+CORE_HIFI_SYSTEM = """You are the in-house product designer for this company's enterprise platform.
+Your job is to produce screens that are INDISTINGUISHABLE from the company's own existing
+product screens — same shell, same spacing, same flat visual language. You are not designing
+a new look; you are extending an existing one.
+
+YOUR DESIGN PHILOSOPHY:
+1. STRUCTURE is locked — reuse the exact page-layout template provided (shell type, sidebar/
+   navbar dimensions, section order). You may only fill the named content slot.
+2. FLAT surfaces — white/light-grey fills, hairline borders, at most a soft ambient shadow
+   (Shadow1/2/3 from the token list). Never a gradient, never a glow, never a decorative blob.
+3. ONE accent — the primary blue appears only on primary buttons, active/selected states,
+   links, and focus rings. Everything else is neutral grey/white.
+4. REAL content — realistic retirement/401k/enterprise data (plan names, employee names,
+   dollar amounts, dates), never lorem ipsum or "Label".
+5. DENSITY over decoration — enterprise data tables and forms are dense and functional,
+   not spaced out for marketing effect.
+
+FORBIDDEN (these break the "looks like our product" goal):
+- Any linear-gradient, radial-gradient, or conic-gradient anywhere
+- Decorative background blobs/orbs/blur shapes
+- backdrop-filter / glassmorphism
+- Colored glows or tinted box-shadows (box-shadow color must be neutral grey/black only)
+- Changing the sidebar width, navbar height, or section order specified by the layout template
+- Rounded pill-shaped hero cards with white text on a color fill
+
+Output raw HTML starting with <div. No markdown fences. No JSON. No HTML comments."""
+
+# Flat equivalent of MODERN_EFFECTS — no gradients/orbs/glass, just the real
+# Shadow1/2/3 + focus-ring tokens extracted from the Figma file.
+CORE_FLAT_EFFECTS = """
+════════════ CORE 2.0 SURFACE TOOLKIT (flat — no gradients/orbs/glass) ════════════
+CARD / PANEL:
+  background:{surface}; border:1px solid {border}; border-radius:8px; box-shadow:{shadow_sm};
+
+RAISED CARD (dropdowns, popovers, tooltips):
+  background:{surface}; border-radius:8px; box-shadow:{shadow_md};
+
+MODAL / FLOATING PANEL:
+  background:{surface}; border-radius:8px; box-shadow:{shadow_lg};
+
+PRIMARY BUTTON (flat, no gradient):
+  background:{primary}; color:#FFFFFF; border-radius:8px; padding:10px 20px; font-weight:600; border:none;
+SECONDARY BUTTON:
+  background:{surface}; color:{text1}; border:1.5px solid {border}; border-radius:8px; padding:9px 20px; font-weight:500;
+
+STATUS BADGE (flat tint, no glow):
+  Success: background:{success_light}; color:{success}; border-radius:16px; padding:3px 10px; font-size:12px; font-weight:600;
+  Warning: background:{warning_light}; color:{warning}; border-radius:16px; padding:3px 10px; font-size:12px; font-weight:600;
+  Critical: background:{error_light}; color:{error}; border-radius:16px; padding:3px 10px; font-size:12px; font-weight:600;
+
+ACTIVE / SELECTED ROW:
+  background:{primary_light}; border-left:3px solid {primary};
+
+FOCUS RING (every interactive element):
+  box-shadow:{focus_default};
+
+TABLE HEADER ROW:
+  background:{surface_subtle}; border-bottom:2px solid {border}; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:{text2};
+
+TABLE DATA ROW:
+  border-bottom:1px solid {border}; padding:14px 16px; font-size:14px; color:{text2};
+"""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MODERN DESIGN EFFECTS LIBRARY (injected into every HIFI prompt)
@@ -205,7 +272,77 @@ SIDEBAR / SPLIT LAYOUT BLUEPRINT (DESKTOP — fixed sidebar + scrollable main):
 }
 
 
-def _get_layout_template(layout_type: str) -> str:
+# CORE 2.0 — exact-pixel shells mined from the real Figma reference screens.
+# Keyed by the SAME generic layout_type strings the planner already emits, so no
+# other call site needs to change; only core-2 requests route here.
+CORE_LAYOUT_TEMPLATES = {
+    "dashboard": """
+CORE SHELL — TOP NAVBAR + ICON RAIL (mined from Dashboard-enrolled, 3 consistent samples):
+  Canvas 1440x1024.
+  [Full-width top Navbar: height=72px, x=0,y=0,width=1440]
+  [Icon rail Menubar: width=96px, below navbar at x=0,y=72,height=952]
+  [Content area: x=96,y=72,width=1344,height=952 — ONLY this region varies]
+  Do NOT combine with the 100px/66px sidebar shell below — this is a distinct, separate shell.
+""",
+    "sidebar": """
+CORE SHELL — SIDEBAR + NAVBAR (mined from Payroll File Info, 4 consistent samples):
+  Canvas 1440x900.
+  [Fixed left sidebar 'Side Menu bar - Light': width=100px, full height]
+  [Top navbar 'Navbar - Top': height=66px, spans x=100..1440]
+  [Content area: x=100,y=66,width=1340,height=834 — ONLY this region varies]
+""",
+    "list": """
+CORE SHELL — SIDEBAR + NAVBAR (same shell as 'sidebar' — reuse exactly):
+  Canvas 1440x900. Sidebar 100px + Navbar 66px + content 1340x834.
+  Content region: dense enterprise data table with header row (uppercase 12px labels),
+  sortable columns, filter bar above the table, pagination footer. Flat rows, no gradients.
+""",
+    "form": """
+CORE SPLIT WIZARD (mined from Questionnaire-1..6, 4+ consistent samples):
+  Canvas 1440x1024.
+  [Left rail: width=592px, full height — step indicator / context]
+  [Right form panel: width=848px, x=592 — inner content padded x=84,y=72,width=680,height~=649]
+""",
+    "detail": """
+CORE SHELL — APP BAR + NAVBAR (mined from Admin Dashborad ×4 + Employee details):
+  Canvas 1440x900.
+  [Icon rail 'App Bar': width=96px, full height, x=0,y=0]
+  [Top navbar 'Navbar - Top': height=64px, spans x=98..1440]
+  [Content area: x=98,y=67,width=1342,height=833 — ONLY this region varies]
+  DISTINCT from 'dashboard' shell (72px navbar) and 'sidebar' shell (100px sidebar/66px navbar) —
+  this shell uses a 96px rail with a 64px navbar. Use for record-detail / admin dashboards.
+""",
+    "confirmation": """
+CORE HEADER-BODY-FOOTER PANEL (mined from Choose Investment ×9 + Risk level acknowledgement ×7):
+  Canvas 1100x1024. This is an embedded panel/drawer — NO sidebar/navbar shell.
+  [Header: height=61px, title left-aligned, ~24px padding]
+  [Body: height=890px, scrollable primary content]
+  [Footer: height=73px, right-aligned action buttons, ~24px right margin]
+""",
+    "centered": """
+CORE AUTH SPLIT (mined from Login with password, 5 consistent samples):
+  Canvas 1441x1019. NO app shell (no sidebar/navbar — auth screens are shell-free).
+  [Left decorative/illustration column: width=638px]
+  [Right form column: width=803px]
+""",
+    "settings": """
+CORE SHELL — APP BAR + NAVBAR + NESTED SIDE MENU (mined from Plan -Sponsor, Plan - Basic Details,
+Confg - Plan details — 3 consistent samples):
+  Canvas 1440x900.
+  [Icon rail 'App Bar': width=96px, full height]
+  [Top navbar 'Navbar - Top': height=64px]
+  [Secondary in-page 'Plan details-sidemenu': width=317px, full content height (836px), directly
+   after the rail/navbar]
+  [Remaining content area: ~1025px wide — ONLY this region varies]
+  Use for settings/configuration/multi-section-form screens. The secondary side menu is the key
+  structural signal — do not substitute a generic tab bar or accordion for it.
+""",
+}
+
+
+def _get_layout_template(layout_type: str, design_system_id: str = "") -> str:
+    if design_system_id == "core-2":
+        return CORE_LAYOUT_TEMPLATES.get(layout_type, CORE_LAYOUT_TEMPLATES["sidebar"])
     return LAYOUT_TEMPLATES.get(layout_type, LAYOUT_TEMPLATES["detail"])
 
 
@@ -481,6 +618,10 @@ async def _generate_single_screen(
     colors  = tokens.get("colors", {})
     typo    = tokens.get("typography", {})
     radius  = tokens.get("radius", {})
+    shadows = tokens.get("shadows", {})
+
+    design_system_id = design_system.get("design_system_id", "")
+    is_core = design_system_id == "core-2"
 
     primary  = colors.get("primary",        "#5B5EF4")
     bg       = colors.get("background",     "#F8F9FC")
@@ -492,8 +633,12 @@ async def _generate_single_screen(
     error    = colors.get("error",          "#EF4444")
     warning  = colors.get("warning",        "#F59E0B")
     font_fam = typo.get("font_family",      "Inter, sans-serif")
+    success_light = colors.get("success_light", "#DCFCE7")
+    warning_light = colors.get("warning_light", "#FEF3C7")
+    error_light   = colors.get("error_light",   "#FEE2E2")
+    primary_light = colors.get("primary_light", "#EFF6FF")
 
-    # Derive a slightly darker primary for gradients
+    # Derive a slightly darker primary for gradients (non-core design systems only)
     primary_dark = _darken_hex(primary, 0.15)
 
     domain       = flow_context.get("domain", "general")
@@ -504,7 +649,7 @@ async def _generate_single_screen(
     primary_action = screen_plan.get("primary_action", "Continue")
 
     domain_comps    = _get_domain_components(domain)
-    layout_template = _get_layout_template(layout_type)
+    layout_template = _get_layout_template(layout_type, design_system_id)
 
     # ── WIREFRAME ──────────────────────────────────────────────────────────────
     if fidelity == "wireframe":
@@ -577,7 +722,15 @@ Output ONLY raw HTML starting with <div. No markdown. No JSON."""
         layout_hint = "TABLET (768px wide): max-w-2xl mx-auto px-6, can use 2-column grid, comfortable spacing"
     else:  # desktop / web dashboard / website
         outer_wrap  = f'<div class="w-full min-h-screen" style="background:{bg};font-family:{font_fam};-webkit-font-smoothing:antialiased;">'
-        if layout_type == "sidebar" or "sidebar" in layout_type or screen_type == "web_dashboard":
+        if is_core:
+            # Exact-pixel shell from the mined layout template — never the generic
+            # 240px-sidebar guess used by other design systems.
+            layout_hint = (
+                f"CORE 2.0 SHELL — see the locked PAGE LAYOUT TEMPLATE below for exact shell "
+                f"dimensions (sidebar/navbar widths, content region). Do not use a 240px sidebar "
+                f"or invent your own shell — reuse the mined template's numbers exactly."
+            )
+        elif layout_type == "sidebar" or "sidebar" in layout_type or screen_type == "web_dashboard":
             layout_hint = (
                 "WEB DASHBOARD (1440px wide): use a fixed sidebar (240px wide) + main content area. "
                 "Sidebar: left-fixed, full height, nav links. Main: flex-1, scrollable, px-8 py-6. "
@@ -589,19 +742,88 @@ Output ONLY raw HTML starting with <div. No markdown. No JSON."""
                 "full-width sections with alternating bg. Large typography: hero 56-72px, section headers 36px."
             )
 
-    # Fill in the modern effects with actual color values
-    effects = MODERN_EFFECTS.replace("{primary}", primary).replace("{primary_dark}", primary_dark) \
-        .replace("{bg}", bg).replace("{surface}", surface) \
-        .replace("{text1}", text1).replace("{text2}", text2) \
-        .replace("{border}", border).replace("{success}", success) \
-        .replace("{error}", error).replace("{warning}", warning)
+    # Fill in the effects toolkit with actual color values — core-2 gets the flat,
+    # gradient-free toolkit; every other design system keeps the existing modern effects.
+    if is_core:
+        focus_default = shadows.get("focus_default", "0 0 0 2px #96B6EA")
+        shadow_sm = shadows.get("sm", "0 2px 5px rgba(184,184,184,0.5)")
+        shadow_md = shadows.get("md", "0 5px 18px -2px rgba(196,196,196,0.45)")
+        shadow_lg = shadows.get("lg", "0 8px 29px 1px rgba(217,217,217,0.4)")
+        effects = CORE_FLAT_EFFECTS.replace("{primary}", primary).replace("{surface}", surface) \
+            .replace("{text1}", text1).replace("{text2}", text2).replace("{border}", border) \
+            .replace("{success_light}", success_light).replace("{success}", success) \
+            .replace("{warning_light}", warning_light).replace("{warning}", warning) \
+            .replace("{error_light}", error_light).replace("{error}", error) \
+            .replace("{primary_light}", primary_light) \
+            .replace("{shadow_sm}", shadow_sm).replace("{shadow_md}", shadow_md) \
+            .replace("{shadow_lg}", shadow_lg).replace("{focus_default}", focus_default) \
+            .replace("{surface_subtle}", colors.get("surface_subtle", "#F5F5F5"))
+    else:
+        effects = MODERN_EFFECTS.replace("{primary}", primary).replace("{primary_dark}", primary_dark) \
+            .replace("{bg}", bg).replace("{surface}", surface) \
+            .replace("{text1}", text1).replace("{text2}", text2) \
+            .replace("{border}", border).replace("{success}", success) \
+            .replace("{error}", error).replace("{warning}", warning)
 
     image_note = ""
     if image_analysis:
         image_note = f"\nREFERENCE (match this closely):\n{_json.dumps(image_analysis, indent=2)[:500]}\n"
 
-    # ── Screen construction rules differ by device type ──────────────────────
-    if is_desktop:
+    # ── CORE 2.0: flat, exact-shell construction rules — skip the generic
+    # gradient-hero/decorative-orb rules entirely for this design system.
+    if is_core:
+        logo_snippet = design_system.get("logo_snippet", "")
+        screen_construction_rules = f"""Reuse the exact shell from the PAGE LAYOUT TEMPLATE above (sidebar/navbar widths,
+content region offsets) — do not resize or reposition it.
+
+BRAND MARK (mandatory — place in the shell header/navbar, do not invent a different logo):
+{logo_snippet}
+
+FLAT CARD (content grouping):
+<div style="background:{surface};border:1px solid {border};border-radius:8px;padding:24px;box-shadow:{shadows.get('sm','0 2px 5px rgba(184,184,184,0.5)')};">
+
+PAGE HEADER (within the content region, NOT a new shell):
+<div style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid {border};">
+  <h1 style="font-size:24px;font-weight:700;color:{text1};margin:0;">Page Title</h1>
+  <button style="background:{primary};color:#FFFFFF;border-radius:8px;padding:10px 20px;font-weight:600;border:none;">Primary Action</button>
+</div>
+
+DATA TABLE ROW (flat, dense — use the real table variants from COMPONENT VARIANTS above: Small
+40px or Regular 48px row height, Filter/Sort/Search header toggles, Checkbox column states):
+<div style="display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid {border};gap:16px;">
+  <div style="flex:1;font-size:14px;color:{text2};">Row Label</div>
+  <span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:16px;background:{success_light};color:{success};">Active</span>
+</div>
+
+FORM FIELD (label above input, no floating labels):
+<div style="margin-bottom:16px;">
+  <label style="display:block;font-size:14px;font-weight:500;color:{text1};margin-bottom:8px;">Field Label</label>
+  <input style="width:100%;border:1.5px solid {border};border-radius:4px;padding:10px 14px;font-size:14px;color:{text1};background:{surface};" />
+</div>
+
+DENSITY REQUIREMENT — this is an enterprise admin surface, not a marketing page. Build AT LEAST
+3 distinct content sections in the content region (e.g. a stat/metric row + a primary data
+table or list + a secondary panel — mirroring how the real product's Dashboard and Payroll
+screens are composed), and use 8-12 realistic data rows in any table/list, not 2-3. A single
+sparse table with no header stats or side panel is NOT acceptable output.
+
+NEVER use gradients, decorative circles/blobs, backdrop-filter, or colored box-shadow glows anywhere in this screen."""
+
+        quality_checklist = f"""☑ Shell matches the PAGE LAYOUT TEMPLATE exactly (sidebar/navbar width, content offset) — not resized or repositioned
+☑ The BRAND MARK markup appears verbatim in the shell header — not a different logo or wordmark
+☑ At least 3 distinct content sections present (stat row + table/list + secondary panel, or equivalent) — not a single sparse block
+☑ Tables/lists use 8-12 realistic rows, not 2-3
+☑ Table/badge/accordion markup matches the COMPONENT VARIANTS spec (real sizes/states), not a generic approximation
+☑ Zero gradients anywhere (no linear-gradient, radial-gradient, conic-gradient)
+☑ Zero decorative blobs/orbs/blur shapes
+☑ Zero backdrop-filter / glassmorphism
+☑ Box-shadows are neutral grey/black only (Shadow1/2/3) — never a colored glow
+☑ Primary color ({primary}) appears only on primary buttons, active/selected states, links, focus rings
+☑ Typography uses Open Sans; body 14px, page title 24px
+☑ All text is realistic retirement/401k/enterprise domain content — no lorem ipsum, no "Label" placeholders
+☑ Tables/forms are dense and functional, not spaced out for marketing effect"""
+
+    elif is_desktop:
         screen_construction_rules = f"""TOP NAVIGATION BAR (desktop — logo left, nav links center, user menu right):
 <div style="display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:60px;background:{surface};border-bottom:1px solid {border};position:sticky;top:0;z-index:10;">
   <div style="display:flex;align-items:center;gap:8px;">
@@ -773,7 +995,15 @@ STATUS BADGE patterns:
 ☑ Typography hierarchy: 3+ distinct font-size/weight levels"""
     # ────────────────────────────────────────────────────────────────────────
 
-    prompt = f"""Build a COMPLETE, production-quality hi-fidelity UI screen. This must look like it was designed by a senior product designer at Stripe, Linear, or Coinbase.
+    _opening = (
+        "Build a COMPLETE, production-quality hi-fidelity UI screen. This must be "
+        "INDISTINGUISHABLE from this company's own existing product screens — reuse "
+        "their exact shell and flat visual language, do not invent a new look."
+        if is_core else
+        "Build a COMPLETE, production-quality hi-fidelity UI screen. This must look "
+        "like it was designed by a senior product designer at Stripe, Linear, or Coinbase."
+    )
+    prompt = f"""{_opening}
 
 ════════════ WHAT TO BUILD ════════════
 SCREEN: {screen_name}
@@ -822,7 +1052,7 @@ Start with: {outer_wrap}
 End with: </div>
 No markdown. No JSON. No HTML comments. No explanation."""
 
-    raw = await llm_chat(HIFI_SYSTEM, prompt, model)
+    raw = await llm_chat(CORE_HIFI_SYSTEM if is_core else HIFI_SYSTEM, prompt, model)
     html = _extract_html(raw)
 
     if html and len(html) > 300:
@@ -895,18 +1125,26 @@ def _extract_html(raw: str) -> str:
 
 def _build_vision_prompt(mode: str, user_prompt: str) -> str:
     if mode == "recreate":
-        return f"""Analyze this UI screenshot in detail for recreation.
+        return f"""You are transcribing a UI screenshot for pixel-faithful recreation — this is NOT
+a general description task. Every piece of visible text must be copied character-for-character,
+never paraphrased, summarized, or replaced with a similar-sounding word. If you are not certain
+of an exact word, transcribe your best literal reading rather than substituting a different word
+that seems more common or more familiar.
 USER WANTS: {user_prompt}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON, with exact_title_text and exact_labels filled in FIRST and treated as
+mandatory — these two fields control what the recreated screen is named and must NEVER be
+generic, invented, or a "similar" screen name from the same product family:
 {{
+  "exact_title_text": "The literal, verbatim text of the largest/primary heading on the screen — copy it exactly, do not paraphrase or generalize it (e.g. if it says 'Manage Year End Process', that is the value — never 'Plans' or any other related-sounding label)",
+  "exact_labels": ["every other visible text label verbatim — column headers, button labels, filter/field labels, nav items, status badges — one string per label, in reading order"],
+  "what_to_recreate": "Specific recreation instructions — MUST reference exact_title_text and MUST describe the actual layout/components seen, not a generic template",
   "screen_type": "dashboard | form | list | detail | landing | other",
   "layout_description": "Overall layout structure",
   "color_palette": ["#hex1", "#hex2", "#hex3"],
   "typography_style": "Description",
-  "components_detected": [{{"type": "header | button | input | card | nav", "content": "text", "position": "top | center | etc"}}],
-  "design_pattern": "Material | iOS | minimal | corporate",
-  "what_to_recreate": "Specific recreation instructions"
+  "components_detected": [{{"type": "header | button | input | card | nav | table", "content": "text", "position": "top | center | etc"}}],
+  "design_pattern": "Material | iOS | minimal | corporate"
 }}"""
     if mode == "improve":
         return f"""Analyze this UI screenshot and suggest improvements.

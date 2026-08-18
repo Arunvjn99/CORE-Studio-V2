@@ -181,8 +181,44 @@ except ImportError:
 import urllib.request as _urllib_request
 
 _provider_clients = {}
-_token_tracker: dict = {"input": 0, "output": 0, "calls": 0, "last_model": ""}
-_gen_token_tracker: dict = {}  # gen_id -> {"input": int, "output": int, "calls": int}
+_token_tracker: dict = {"input": 0, "output": 0, "calls": 0, "last_model": "", "cost_usd": 0.0}
+_gen_token_tracker: dict = {}  # gen_id -> {"input": int, "output": int, "calls": int, "cost_start": float}
+
+# Approximate public list pricing, USD per 1M tokens (input, output). Matched by substring
+# against the model name rather than exact snapshot ID, since ANTHROPIC_MODEL/etc. env vars
+# can point at different dated snapshots of the same family. Local Ollama models are free.
+# Update these if provider pricing changes.
+_MODEL_PRICING = [
+    # (substring to match in model name, price_in_per_mtok, price_out_per_mtok)
+    ("opus",   15.00, 75.00),
+    ("sonnet",  3.00, 15.00),
+    ("haiku",   0.80,  4.00),
+    ("gpt-4o-mini", 0.15, 0.60),
+    ("gpt-4o",      2.50, 10.00),
+    ("gemini-1.5-flash", 0.075, 0.30),
+    ("gemini-1.5-pro",   1.25,  5.00),
+    ("gemini",           1.25,  5.00),  # fallback for other gemini variants
+]
+
+
+def _price_for_model(model: str) -> tuple[float, float]:
+    """Returns (price_in_per_mtok, price_out_per_mtok) for a model name, or (0,0) for
+    unrecognized/local models (Ollama)."""
+    name = (model or "").lower()
+    for substr, price_in, price_out in _MODEL_PRICING:
+        if substr in name:
+            return price_in, price_out
+    return 0.0, 0.0
+
+
+def _track_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+    """Central place to update the global token/cost tracker for any provider call."""
+    price_in, price_out = _price_for_model(model)
+    _token_tracker["input"] += input_tokens
+    _token_tracker["output"] += output_tokens
+    _token_tracker["calls"] += 1
+    _token_tracker["last_model"] = model
+    _token_tracker["cost_usd"] += (input_tokens / 1_000_000) * price_in + (output_tokens / 1_000_000) * price_out
 
 def _get_anthropic():
     if "anthropic" not in _provider_clients:
@@ -212,7 +248,11 @@ def _call_ollama_sync(model: str, system: str, user: str) -> str:
             {"role": "user",   "content": user},
         ],
         "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 8192},
+        # num_ctx must be set explicitly — Ollama otherwise silently caps the
+        # context window at 4096 tokens regardless of what the model supports,
+        # and design-system prompts (tokens + layout grammar + RAG context)
+        # routinely exceed that.
+        "options": {"temperature": 0.3, "num_predict": 8192, "num_ctx": 32768},
     }).encode("utf-8")
     req = _urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/chat", data=payload,
@@ -232,11 +272,7 @@ def _call_anthropic_sync(model: str, system: str, user: str) -> str:
         model=model, max_tokens=8192, system=system,
         messages=[{"role": "user", "content": user}],
     )
-    # Track token usage globally
-    _token_tracker["input"] += msg.usage.input_tokens
-    _token_tracker["output"] += msg.usage.output_tokens
-    _token_tracker["calls"] += 1
-    _token_tracker["last_model"] = model
+    _track_usage(model, msg.usage.input_tokens, msg.usage.output_tokens)
     return msg.content[0].text
 
 
@@ -249,6 +285,8 @@ def _call_openai_sync(model: str, system: str, user: str) -> str:
             {"role": "user", "content": user},
         ],
     )
+    if resp.usage:
+        _track_usage(model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
     return resp.choices[0].message.content
 
 
@@ -257,6 +295,8 @@ def _call_gemini_sync(model: str, system: str, user: str) -> str:
     from google.generativeai.types import GenerationConfig
     gmodel = genai.GenerativeModel(model, system_instruction=system)
     resp = gmodel.generate_content(user, generation_config=GenerationConfig(max_output_tokens=8192))
+    if getattr(resp, "usage_metadata", None):
+        _track_usage(model, resp.usage_metadata.prompt_token_count, resp.usage_metadata.candidates_token_count)
     return resp.text
 
 
@@ -2048,7 +2088,9 @@ def _vision_anthropic(b64_image: str, prompt: str) -> str:
 def _vision_openai(b64_image: str, prompt: str) -> str:
     client = _get_openai()
     resp = client.chat.completions.create(
-        model=PROVIDER_MODELS["openai"]["standard"], max_tokens=2048,
+        # 2048 was too low for full-screen HTML recreation (detailed tables/cards need
+        # more headroom) — matches the 8192 budget used for _vision_anthropic.
+        model=PROVIDER_MODELS["openai"]["standard"], max_tokens=8192,
         messages=[{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
@@ -2069,7 +2111,10 @@ def _vision_ollama(b64_image: str, prompt: str) -> str:
     payload = json.dumps({
         "model": OLLAMA_MODELS["vision"],
         "messages": [{"role": "user", "content": prompt, "images": [b64_image]}],
-        "stream": False, "options": {"temperature": 0.2, "num_predict": 2048},
+        # num_ctx set explicitly for the same reason as _call_ollama_sync — Ollama
+        # otherwise silently caps context at 4096 tokens, and an embedded image plus
+        # the detailed verbatim-transcription vision prompt can exceed that.
+        "stream": False, "options": {"temperature": 0.2, "num_predict": 2048, "num_ctx": 8192},
     }).encode("utf-8")
     req = _urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/chat", data=payload,
@@ -2087,13 +2132,23 @@ async def llm_chat_vision(b64_image: str, prompt: str) -> str:
     """Vision call — uses cloud provider's vision model if available, else LLava."""
     loop = asyncio.get_event_loop()
 
-    # Always try cloud vision first — it's dramatically better for design recreation
+    # Always try cloud vision first — it's dramatically better for design recreation.
+    # BUG FIXED: this used to gate on `ANTHROPIC_API_KEY` regardless of which provider
+    # was actually active, so an OpenAI- or Gemini-configured deployment would silently
+    # skip cloud vision (since ANTHROPIC_API_KEY would be unset) and fall through to the
+    # much weaker local llava:7b model every time — the exact failure mode that caused
+    # inaccurate "recreate" results even when a good cloud vision model was configured.
     vision_fn = {
         "anthropic": _vision_anthropic,
         "openai": _vision_openai,
         "gemini": _vision_gemini,
     }.get(CLOUD_PROVIDER)
-    if vision_fn and ANTHROPIC_API_KEY:
+    provider_key = {
+        "anthropic": ANTHROPIC_API_KEY,
+        "openai": OPENAI_API_KEY,
+        "gemini": GEMINI_API_KEY,
+    }.get(CLOUD_PROVIDER)
+    if vision_fn and provider_key:
         try:
             return await loop.run_in_executor(None, vision_fn, b64_image, prompt)
         except Exception as e:
@@ -2171,9 +2226,11 @@ async def analyst_research(
 
     tokens_before = _token_tracker["input"] + _token_tracker["output"]
     calls_before = _token_tracker["calls"]
+    cost_before = _token_tracker["cost_usd"]
     result = await _run()
     tokens_used = (_token_tracker["input"] + _token_tracker["output"]) - tokens_before
     calls_used = _token_tracker["calls"] - calls_before
+    cost_used = _token_tracker["cost_usd"] - cost_before
     return {
         "result": result,
         "research_type": research_type,
@@ -2184,6 +2241,7 @@ async def analyst_research(
             "input": _token_tracker["input"],
             "output": _token_tracker["output"],
             "calls": calls_used,
+            "cost_usd": round(cost_used, 4),
             "model": _token_tracker.get("last_model", select_model(6, "research")),
         },
     }
@@ -2688,6 +2746,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
         "input_start": _token_tracker["input"],
         "output_start": _token_tracker["output"],
         "calls_start": _token_tracker["calls"],
+        "cost_start": _token_tracker["cost_usd"],
     }
 
     async def progress(event: dict):
@@ -2698,6 +2757,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
             "calls": _token_tracker["calls"] - gen_snap.get("calls_start", 0),
             "total": (_token_tracker["input"] - gen_snap.get("input_start", 0)) +
                      (_token_tracker["output"] - gen_snap.get("output_start", 0)),
+            "cost_usd": round(_token_tracker["cost_usd"] - gen_snap.get("cost_start", 0.0), 4),
             "model": _token_tracker.get("last_model", ""),
         }
         if gen_id in _active_generations:
@@ -2880,6 +2940,7 @@ async def _run_generate(gen_id, session_id, plan_payload, approved_ids, user_pro
         "input_start": _token_tracker["input"],
         "output_start": _token_tracker["output"],
         "calls_start": _token_tracker["calls"],
+        "cost_start": _token_tracker["cost_usd"],
     }
 
     async def progress(event: dict):
@@ -2891,6 +2952,7 @@ async def _run_generate(gen_id, session_id, plan_payload, approved_ids, user_pro
             "calls": _token_tracker["calls"] - gen_snap.get("calls_start", 0),
             "total": (_token_tracker["input"] - gen_snap.get("input_start", 0)) +
                      (_token_tracker["output"] - gen_snap.get("output_start", 0)),
+            "cost_usd": round(_token_tracker["cost_usd"] - gen_snap.get("cost_start", 0.0), 4),
             "model": _token_tracker.get("last_model", ""),
         }
         if gen_id in _active_generations:
@@ -3105,23 +3167,30 @@ async def export_design(req: ExportRequest, user: User = Depends(get_current_use
         return {"format": "html", "filename": "core-studio-export.html", "content": html, "screen_count": len(screens)}
 
     elif req.format == "figma_json":
-        # Figma-plugin compatible payload (same shape V1 plugin used)
-        figma_screens = [
-            {
+        # Real auto-layout node tree (not a flat HTML dump) for the CORE Studio Figma
+        # plugin (packages/figma-plugin/) — built via html_to_figma_tree, which maps
+        # each screen's flexbox-based inline styles to Figma's official Plugin API
+        # properties (layoutMode, itemSpacing, padding*, alignment, sizing).
+        from app.design_system.figma_export import html_to_figma_tree
+
+        figma_screens = []
+        for s in screens:
+            try:
+                tree = html_to_figma_tree(s["html"])
+            except Exception as e:
+                tree = {"type": "FRAME", "layout": {"mode": "NONE"}, "style": {}, "children": [], "error": str(e)}
+            figma_screens.append({
                 "title": s["name"],
-                "background": "#FFFFFF",
-                "html": s["html"],
                 "width": 1440,
                 "height": 1024,
-            }
-            for s in screens
-        ]
+                "tree": tree,
+            })
         return {
             "format": "figma_json",
             "filename": "core-studio-figma.json",
-            "content": {"screens": figma_screens, "version": "2.0"},
+            "content": {"screens": figma_screens, "version": "3.0"},
             "screen_count": len(screens),
-            "instructions": "Import this JSON via the CORE Studio Figma plugin (Plugins → CORE Studio → Import).",
+            "instructions": "Open Figma → Plugins → CORE Studio Import → paste or load this JSON to build real auto-layout frames.",
         }
 
     raise HTTPException(400, "format must be 'html' or 'figma_json'")
@@ -3637,15 +3706,14 @@ async def ai_status(user: User = Depends(get_current_user)):
 async def get_token_usage(user: User = Depends(get_current_user)):
     """Return cumulative token usage for this server session."""
     total = _token_tracker["input"] + _token_tracker["output"]
-    # Rough cost estimate for Anthropic Sonnet 4.6: $3/M input, $15/M output
-    cost = (_token_tracker["input"] / 1_000_000 * 3.0) + (_token_tracker["output"] / 1_000_000 * 15.0)
     return {
         "input_tokens": _token_tracker["input"],
         "output_tokens": _token_tracker["output"],
         "total_tokens": total,
         "api_calls": _token_tracker["calls"],
         "last_model": _token_tracker["last_model"],
-        "estimated_cost_usd": round(cost, 4),
+        # Tracked per-call, per-model (see _track_usage) — not a flat single-model estimate.
+        "estimated_cost_usd": round(_token_tracker["cost_usd"], 4),
     }
 
 
