@@ -1,0 +1,11 @@
+{
+  "name": "CORE Studio Import",
+  "id": "core-studio-import",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["none"]
+  }
+}

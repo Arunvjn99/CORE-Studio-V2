@@ -51,39 +51,128 @@ core-studio-v2/
 - WebSocket support for real-time agent updates
 - Design system registry and token builder (V1 design system integration)
 
-## Quick Start
+## Installing on a new machine (from GitHub)
 
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- (Optional) Ollama for local AI
-- (Optional) Docker for full stack
+This section walks through everything needed to go from a bare machine to a running app,
+cloned fresh from git. Two paths are documented — pick one:
 
-### Setup
+- **Path A — Local, no Docker** (recommended for trying it out / development). Uses SQLite,
+  no Postgres/Redis install needed. This is the path verified end-to-end while building this app.
+- **Path B — Docker** (closer to production topology: Postgres + Redis + Celery).
+
+### 1. System requirements
+
+| Requirement | Version | Why |
+|---|---|---|
+| **Git** | any recent version | to clone the repo |
+| **Python** | 3.11 or newer (3.13 tested) | backend (FastAPI) |
+| **Node.js** | 18 or newer (tested with 20+) | frontend (Next.js) + the Figma plugin build |
+| **npm** | bundled with Node | frontend/plugin package installs |
+| **~2 GB free disk** | | Python venv + node_modules + (optional) local AI models |
+
+Optional, only if you want the corresponding feature:
+
+| Optional requirement | Needed for |
+|---|---|
+| **Docker + Docker Compose** | Path B (full stack: Postgres, Redis, Celery) |
+| **[Ollama](https://ollama.ai)** | Running AI 100% locally instead of a cloud API key |
+| **An API key** for Anthropic, OpenAI, or Gemini | Cloud AI (recommended — much higher quality than local models) |
+| **Figma desktop app** | Only for the "Copy to Figma" plugin (`packages/figma-plugin/`) — not required to run the app itself |
+
+You need **either** a cloud API key **or** Ollama running locally — the app auto-detects
+which is available (`AI_BACKEND_MODE=auto`). Cloud is strongly recommended for design/vision
+quality; local Ollama models work but are noticeably weaker, especially for image-based
+"recreate" requests.
+
+### 2. Clone the repository
 
 ```bash
-make setup
-# Edit packages/backend/.env with your API keys
-cp packages/backend/.env.example packages/backend/.env
-cp packages/frontend/.env.example packages/frontend/.env.local
+git clone https://github.com/Arunvjn99/CORE-Studio-V2.git
+cd CORE-Studio-V2
 ```
 
-### Run locally (recommended)
+### 3. Path A — Local setup (no Docker)
 
+**Backend:**
 ```bash
+cd packages/backend
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements-local.txt
+cp .env.example .env
+```
+Edit `packages/backend/.env` and set **one** of these AI options:
+- Cloud: fill in `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `GEMINI_API_KEY`)
+- Local: install [Ollama](https://ollama.ai), then pull the 3 models this app uses:
+  ```bash
+  ollama pull deepseek-r1:8b       # planning / reasoning
+  ollama pull qwen2.5-coder:7b     # UI/code generation
+  ollama pull llava:7b             # vision (image analysis, "recreate from screenshot")
+  ```
+Also set `JWT_SECRET` to any random string.
+
+**Frontend** (new terminal tab):
+```bash
+cd packages/frontend
+npm install
+cp .env.example .env.local
+```
+
+**Run both:**
+```bash
+# from repo root
 make dev-local
+```
+Or run each manually in separate terminals:
+```bash
+cd packages/backend  && source .venv/bin/activate && python3 server_local.py
+cd packages/frontend && npm run dev
 ```
 
 - Frontend → http://localhost:3000
 - Backend → http://localhost:8000
-- API Docs → http://localhost:8000/docs
+- API docs → http://localhost:8000/docs
+- Health check → http://localhost:8000/api/health (confirm `"status":"healthy"`)
 
-### Run with Docker
+The local backend uses **SQLite** — a `core_studio_local.db` file is created automatically
+on first run, no database setup needed.
+
+### 4. Path B — Docker (full stack)
+
+Requires Docker + Docker Compose installed and running.
 
 ```bash
-make dev              # Full stack (Postgres, Redis, Celery)
-make dev-docker       # Lightweight Docker dev stack
+cp .env.example .env
+# edit .env — set ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY and JWT_SECRET
+make dev              # full stack: Postgres, Redis, Celery, backend, frontend
+# or, a lighter stack with no Postgres:
+make dev-docker
 ```
+This runs Alembic-backed Postgres instead of SQLite — matches the production deployment path.
+
+### 5. (Optional) Copy-to-Figma plugin
+
+Only needed if you want to use the "Figma" export button's companion plugin:
+```bash
+cd packages/figma-plugin
+npm install
+npm run build          # compiles code.ts -> code.js
+```
+Then in the Figma desktop app: **Plugins → Development → Import plugin from manifest…**,
+select `packages/figma-plugin/manifest.json`. See `packages/figma-plugin/README.md` for details.
+
+### Troubleshooting
+
+- **"Address already in use" on port 8000** — something else is already running there;
+  either stop it or run uvicorn on a different port (`uvicorn server_local:app --port 8010`).
+- **Ollama responses seem cut off / errors mentioning context size** — make sure you're on a
+  current version of this repo; earlier versions had a bug where Ollama silently capped
+  context at 4096 tokens. This is fixed as of the code you just cloned.
+- **`ModuleNotFoundError` on backend start** — you're probably not inside the venv; re-run
+  `source .venv/bin/activate` in `packages/backend` before starting the server.
+- **No AI response / "No vision backend available"** — you need at least one of: a cloud API
+  key in `.env`, or Ollama running (`ollama serve`) with the 3 models pulled above.
 
 ## Environment
 
@@ -91,10 +180,11 @@ See `packages/backend/.env.example` for all backend variables. Key settings:
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic Claude API key |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | Cloud AI provider keys (set at least one, or use Ollama) |
 | `ANTHROPIC_MODEL` | Default model (e.g. `claude-sonnet-4-6`) |
+| `OLLAMA_BASE_URL` | Local Ollama server (default `http://localhost:11434`) |
 | `AI_BACKEND_MODE` | `auto`, `cloud`, or `ollama` |
-| `JWT_SECRET` | Auth signing secret |
+| `JWT_SECRET` | Auth signing secret — set to any long random string |
 
 Frontend env (`packages/frontend/.env.local`):
 
@@ -111,6 +201,14 @@ make dev-frontend    # Frontend only
 make stop            # Stop local processes
 make lint            # Run linters
 make type-check      # TypeScript check
+```
+
+### Running tests
+
+```bash
+cd packages/backend
+pip install pytest pytest-asyncio   # if not already installed
+pytest tests/test_core_design_system.py -v
 ```
 
 ## License

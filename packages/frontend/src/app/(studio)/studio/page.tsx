@@ -7,11 +7,12 @@ import {
   Send, Sparkles, Wand2, Box, Palette, Check, Loader2,
   Smartphone, Monitor, Tablet, X, Code, ChevronDown, Plus,
   Download, Share2, FileCode, Cloud, Cpu, Zap, ShieldCheck,
-  AlertTriangle, CheckCircle2, BarChart2, Layers, Info
+  AlertTriangle, CheckCircle2, BarChart2, Layers, Info,
+  Pencil, History, RotateCcw
 } from "lucide-react";
 import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils/cn";
-import { DesignCanvas, CanvasScreen } from "@/components/studio/DesignCanvas";
+import { DesignCanvas, CanvasScreen, ScreenVersionEntry } from "@/components/studio/DesignCanvas";
 import { AgentPanel, AgentStep, PlannedScreen } from "@/components/studio/AgentPanel";
 
 interface TokenUsage {
@@ -20,6 +21,7 @@ interface TokenUsage {
   calls: number;
   total: number;
   model: string;
+  cost_usd?: number;
 }
 
 interface ComplianceMetrics {
@@ -37,7 +39,6 @@ interface ComplianceMetrics {
   summary: string;
 }
 
-const DOMAINS = ["retirement", "loan", "insurance", "healthcare", "banking", "ecommerce", "general"];
 const DEVICES = [
   { id: "mobile", label: "Mobile", icon: Smartphone, width: 390, height: 760 },
   { id: "tablet", label: "Tablet", icon: Tablet, width: 768, height: 1024 },
@@ -54,11 +55,13 @@ export default function StudioPage() {
   const queryClient = useQueryClient();
 
   // Config
-  const [designSystemId, setDesignSystemId] = useState("company");
+  const [designSystemId, setDesignSystemId] = useState("core-2");
+  const [showOtherDesignSystems, setShowOtherDesignSystems] = useState(false);
   const [fidelity, setFidelity] = useState<"wireframe" | "hifi">("hifi");
   const [autoCount, setAutoCount] = useState(true);   // agent decides count
   const [screenCount, setScreenCount] = useState(3);
-  const [domain, setDomain] = useState("general");
+  // Domain is fixed — this instance is scoped to retirement-industry design only.
+  const domain = "retirement";
   const [device, setDevice] = useState("mobile");
   const [deviceForced, setDeviceForced] = useState(false);
   const [showConfig, setShowConfig] = useState(true);
@@ -83,6 +86,9 @@ export default function StudioPage() {
   const [generatingNames, setGeneratingNames] = useState<string[]>([]);
   const [selectedScreen, setSelectedScreen] = useState<CanvasScreen | null>(null);
   const [codeScreen, setCodeScreen] = useState<CanvasScreen | null>(null);
+  const [editScreen, setEditScreen] = useState<CanvasScreen | null>(null);
+  const [editInstruction, setEditInstruction] = useState("");
+  const [editPreviewVersion, setEditPreviewVersion] = useState<ScreenVersionEntry | null>(null);
 
   // Token tracking + compliance
   const [liveTokens, setLiveTokens] = useState<TokenUsage | null>(null);
@@ -183,6 +189,8 @@ export default function StudioPage() {
         case "screen_regenerated":
           if (ev.screen) {
             setScreens(prev => prev.map(s => s.screen_id === ev.screen.screen_id ? ev.screen : s));
+            setEditScreen(prev => (prev && prev.screen_id === ev.screen.screen_id) ? ev.screen : prev);
+            setEditPreviewVersion(null);
             toast.success(ev.message);
           }
           break;
@@ -292,6 +300,34 @@ export default function StudioPage() {
     if (refinement) regenMutation.mutate({ screenId: screen.screen_id, refinement });
   };
 
+  // ── Edit modal (scoped to one screen, with version history) ────────────────
+  const openEditModal = (screen: CanvasScreen) => {
+    setEditScreen(screen);
+    setEditInstruction("");
+    setEditPreviewVersion(null);
+  };
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ screenId, version }: { screenId: string; version: number }) =>
+      api.post("/design/restore-screen-version", {
+        session_id: sessionId,
+        screen_id: screenId,
+        version,
+      }).then(r => r.data),
+    onSuccess: (data) => {
+      setScreens(prev => prev.map(s => s.screen_id === data.screen.screen_id ? data.screen : s));
+      setEditScreen(data.screen);
+      setEditPreviewVersion(null);
+      toast.success("Version restored");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Restore failed"),
+  });
+
+  const handleEditGenerate = () => {
+    if (!editScreen || !editInstruction.trim()) return;
+    regenMutation.mutate({ screenId: editScreen.screen_id, refinement: editInstruction.trim() });
+  };
+
   // ── Export ─────────────────────────────────────────────────────────────────
   const exportMutation = useMutation({
     mutationFn: (format: string) => api.post("/design/export", {
@@ -313,7 +349,7 @@ export default function StudioPage() {
         const a = document.createElement("a");
         a.href = url; a.download = data.filename; a.click();
         URL.revokeObjectURL(url);
-        toast.success("Figma JSON downloaded — import via CORE Studio plugin");
+        toast.success("Figma JSON downloaded — open Figma → Plugins → CORE Studio Import → paste this file's contents");
       }
     },
     onError: () => toast.error("Export failed"),
@@ -362,23 +398,55 @@ export default function StudioPage() {
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
                       Design System
                     </label>
-                    <div className="grid grid-cols-2 gap-1">
-                      {designSystems.map(ds => (
+                    {!showOtherDesignSystems ? (
+                      <div className="space-y-1.5">
+                        {(() => {
+                          const core = designSystems.find(ds => ds.id === "core-2");
+                          return (
+                            <div
+                              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-violet-300 bg-violet-50 text-left"
+                            >
+                              <div className="w-3 h-3 rounded-md flex-shrink-0 border border-white shadow-sm" style={{ background: core?.primary_color || "#004DCB" }} />
+                              <span className="text-[10px] font-medium truncate text-violet-700">
+                                {core?.name || "CORE 2.0 Design System"}
+                              </span>
+                            </div>
+                          );
+                        })()}
                         <button
-                          key={ds.id}
-                          onClick={() => setDesignSystemId(ds.id)}
-                          className={cn(
-                            "flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-left transition-all",
-                            designSystemId === ds.id ? "border-violet-300 bg-violet-50" : "border-gray-100 hover:bg-gray-50"
-                          )}
+                          onClick={() => setShowOtherDesignSystems(true)}
+                          className="text-[10px] font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2"
                         >
-                          <div className="w-3 h-3 rounded-md flex-shrink-0 border border-white shadow-sm" style={{ background: ds.primary_color }} />
-                          <span className={cn("text-[10px] font-medium truncate", designSystemId === ds.id ? "text-violet-700" : "text-gray-600")}>
-                            {ds.name.replace(" Design", "").replace(" App Style", "").replace(" Design System", "")}
-                          </span>
+                          Use a different style
                         </button>
-                      ))}
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <div className="grid grid-cols-2 gap-1">
+                          {designSystems.map(ds => (
+                            <button
+                              key={ds.id}
+                              onClick={() => setDesignSystemId(ds.id)}
+                              className={cn(
+                                "flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-left transition-all",
+                                designSystemId === ds.id ? "border-violet-300 bg-violet-50" : "border-gray-100 hover:bg-gray-50"
+                              )}
+                            >
+                              <div className="w-3 h-3 rounded-md flex-shrink-0 border border-white shadow-sm" style={{ background: ds.primary_color }} />
+                              <span className={cn("text-[10px] font-medium truncate", designSystemId === ds.id ? "text-violet-700" : "text-gray-600")}>
+                                {ds.name.replace(" Design", "").replace(" App Style", "").replace(" Design System", "")}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => { setShowOtherDesignSystems(false); setDesignSystemId("core-2"); }}
+                          className="text-[10px] font-medium text-gray-400 hover:text-gray-600 underline underline-offset-2"
+                        >
+                          Back to Core
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Fidelity */}
@@ -426,20 +494,6 @@ export default function StudioPage() {
                             className="w-full h-1 mt-1 bg-gray-200 rounded-full appearance-none cursor-pointer accent-violet-500" />
                         )}
                       </button>
-                    </div>
-                  </div>
-
-                  {/* Domain */}
-                  <div>
-                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Domain</label>
-                    <div className="flex flex-wrap gap-1">
-                      {DOMAINS.map(d => (
-                        <button key={d} onClick={() => setDomain(d)}
-                          className={cn("text-[9px] px-1.5 py-0.5 rounded-full border capitalize",
-                            domain === d ? "bg-violet-500 text-white border-violet-500" : "bg-white text-gray-600 border-gray-200")}>
-                          {d}
-                        </button>
-                      ))}
                     </div>
                   </div>
 
@@ -627,6 +681,12 @@ export default function StudioPage() {
             )}>
               <Zap className="w-2.5 h-2.5" />
               <span>{(liveTokens.total / 1000).toFixed(1)}k tokens</span>
+              {typeof liveTokens.cost_usd === "number" && (
+                <>
+                  <span className="text-gray-400">·</span>
+                  <span>${liveTokens.cost_usd < 0.01 ? liveTokens.cost_usd.toFixed(4) : liveTokens.cost_usd.toFixed(2)}</span>
+                </>
+              )}
               <span className="text-gray-400">·</span>
               <span>{liveTokens.calls} call{liveTokens.calls !== 1 ? "s" : ""}</span>
               {liveTokens.model && (
@@ -724,6 +784,7 @@ export default function StudioPage() {
               onSelectScreen={setSelectedScreen}
               onRegenerateScreen={handleRegenerate}
               onViewCode={setCodeScreen}
+              onEditScreen={openEditModal}
             />
           )}
         </div>
@@ -773,7 +834,12 @@ export default function StudioPage() {
                 <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl p-3 border border-gray-200">
                   <div className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1">Tokens Used</div>
                   <div className="text-2xl font-bold text-gray-800">{liveTokens ? `${(liveTokens.total / 1000).toFixed(1)}k` : "—"}</div>
-                  <div className="text-[9px] text-gray-500">{liveTokens ? `${liveTokens.calls} API call${liveTokens.calls !== 1 ? "s" : ""}` : ""}</div>
+                  <div className="text-[9px] text-gray-500">
+                    {liveTokens
+                      ? `${liveTokens.calls} API call${liveTokens.calls !== 1 ? "s" : ""}`
+                        + (typeof liveTokens.cost_usd === "number" ? ` · $${liveTokens.cost_usd < 0.01 ? liveTokens.cost_usd.toFixed(4) : liveTokens.cost_usd.toFixed(2)}` : "")
+                      : ""}
+                  </div>
                 </div>
               </div>
 
@@ -870,6 +936,147 @@ export default function StudioPage() {
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* Edit modal — scoped to one screen, with version history */}
+      <AnimatePresence>
+        {editScreen && (() => {
+          const isRegenerating = regenMutation.isPending && regenMutation.variables?.screenId === editScreen.screen_id;
+          const isRestoring = restoreMutation.isPending;
+          const versions: ScreenVersionEntry[] = [
+            ...(editScreen.refinement_history || []),
+            // Current live version, if not already the tail of history (covers screens that
+            // haven't been refined yet — history is empty, so this is the only entry).
+            ...(editScreen.refinement_history?.some(v => v.version === (editScreen.version || 1))
+              ? []
+              : [{
+                  version: editScreen.version || 1,
+                  html: editScreen.html,
+                  instruction: null,
+                  change_summary: "Initial generation",
+                  created_at: "",
+                }]),
+          ].sort((a, b) => a.version - b.version);
+          const preview = editPreviewVersion;
+          const previewHtml = preview ? preview.html : editScreen.html;
+          const isLatest = !preview || preview.version === (editScreen.version || 1);
+
+          return (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-8"
+              onClick={() => setEditScreen(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }}
+                className="bg-white rounded-xl overflow-hidden max-w-5xl w-full max-h-[85vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Pencil className="w-4 h-4 text-violet-600" />
+                    <span className="text-sm font-semibold text-gray-800">Edit — {editScreen.name}</span>
+                    <span className="text-[10px] font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">
+                      V{editScreen.version || 1}
+                    </span>
+                  </div>
+                  <button onClick={() => setEditScreen(null)} className="text-gray-400 hover:text-gray-700">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex flex-1 min-h-0">
+                  {/* Version history rail */}
+                  <div className="w-56 border-r border-gray-200 overflow-y-auto flex-shrink-0 bg-gray-50">
+                    <div className="px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1">
+                      <History className="w-3 h-3" /> Version history
+                    </div>
+                    {versions.slice().reverse().map(v => {
+                      const isSelected = preview ? preview.version === v.version : v.version === (editScreen.version || 1);
+                      return (
+                        <button
+                          key={v.version}
+                          onClick={() => setEditPreviewVersion(v.version === (editScreen.version || 1) ? null : v)}
+                          className={cn(
+                            "w-full text-left px-3 py-2 border-b border-gray-100 hover:bg-violet-50 transition-colors",
+                            isSelected && "bg-violet-100"
+                          )}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-violet-700">V{v.version}</span>
+                            {v.version === (editScreen.version || 1) && (
+                              <span className="text-[9px] bg-green-100 text-green-700 px-1 rounded">latest</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-600 mt-0.5 line-clamp-2">{v.change_summary}</p>
+                          {v.created_at && (
+                            <p className="text-[10px] text-gray-400 mt-0.5">
+                              {new Date(v.created_at).toLocaleString()}
+                            </p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Preview + instruction */}
+                  <div className="flex-1 flex flex-col min-w-0">
+                    <div className="flex-1 overflow-auto bg-gray-100 p-4">
+                      {!isLatest && (
+                        <div className="mb-2 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                          <span className="text-xs text-amber-800">
+                            Previewing V{preview!.version} — {preview!.change_summary}
+                          </span>
+                          <button
+                            onClick={() => restoreMutation.mutate({ screenId: editScreen.screen_id, version: preview!.version })}
+                            disabled={isRestoring}
+                            className="text-xs font-semibold text-amber-800 hover:text-amber-950 flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                            Restore this version
+                          </button>
+                        </div>
+                      )}
+                      <div className="bg-white rounded-lg shadow-sm overflow-hidden mx-auto" style={{ maxWidth: 900 }}>
+                        <iframe
+                          srcDoc={previewHtml}
+                          className="w-full border-0"
+                          style={{ height: 560 }}
+                          title="Screen preview"
+                          sandbox="allow-same-origin allow-scripts"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-200 p-3 flex-shrink-0">
+                      <textarea
+                        value={editInstruction}
+                        onChange={e => setEditInstruction(e.target.value)}
+                        placeholder={`Describe the change to make to "${editScreen.name}" — e.g. "Increase card spacing and make the primary button more prominent"`}
+                        rows={3}
+                        className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-violet-300"
+                        disabled={isRegenerating}
+                      />
+                      <div className="flex items-center justify-between mt-2">
+                        <span className="text-[11px] text-gray-400">
+                          Changes apply only to this screen — other screens are unaffected.
+                        </span>
+                        <button
+                          onClick={handleEditGenerate}
+                          disabled={!editInstruction.trim() || isRegenerating}
+                          className="flex items-center gap-1.5 bg-violet-600 text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isRegenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                          {isRegenerating ? "Generating..." : "Generate"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

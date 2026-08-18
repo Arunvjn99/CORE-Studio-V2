@@ -34,28 +34,30 @@ const DEPARTMENTS = [
     dot: "bg-blue-500",
     description: "Research, PRD, Stories",
   },
-  {
-    id: "qa",
-    href: "/qa",
-    icon: CheckSquare,
-    label: "QA",
-    color: "text-emerald-600",
-    bg: "bg-emerald-50",
-    border: "border-emerald-200",
-    dot: "bg-emerald-500",
-    description: "Tests, Accessibility",
-  },
-  {
-    id: "engineering",
-    href: "/engineering",
-    icon: Code2,
-    label: "Engineering",
-    color: "text-amber-600",
-    bg: "bg-amber-50",
-    border: "border-amber-200",
-    dot: "bg-amber-500",
-    description: "Code, API, Architecture",
-  },
+  // QA and Engineering are temporarily hidden for the demo (design/BA flow only).
+  // Routes and pages still exist — re-add these entries to restore nav access.
+  // {
+  //   id: "qa",
+  //   href: "/qa",
+  //   icon: CheckSquare,
+  //   label: "QA",
+  //   color: "text-emerald-600",
+  //   bg: "bg-emerald-50",
+  //   border: "border-emerald-200",
+  //   dot: "bg-emerald-500",
+  //   description: "Tests, Accessibility",
+  // },
+  // {
+  //   id: "engineering",
+  //   href: "/engineering",
+  //   icon: Code2,
+  //   label: "Engineering",
+  //   color: "text-amber-600",
+  //   bg: "bg-amber-50",
+  //   border: "border-amber-200",
+  //   dot: "bg-amber-500",
+  //   description: "Code, API, Architecture",
+  // },
 ];
 
 const NAV_BOTTOM = [

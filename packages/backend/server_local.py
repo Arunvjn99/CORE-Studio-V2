@@ -74,6 +74,17 @@ GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE
 OLLAMA_BASE_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 AI_BACKEND_MODE   = os.getenv("AI_BACKEND_MODE", "auto").lower()
 
+# Vision (image analysis) is deliberately resolved INDEPENDENTLY of AI_BACKEND_MODE/
+# CLOUD_PROVIDER below. AI_BACKEND_MODE governs which model handles TEXT generation
+# (planning/UI/code) and a user may reasonably pick "ollama" there to save cost — but
+# reading an uploaded reference image accurately (the "recreate"/"redesign" flow) is a
+# different job with a much bigger quality gap between local and cloud models, so it
+# always prefers the best available vision model regardless of the text-generation
+# choice. VISION_PROVIDER lets you pin a specific one; "auto" (default) picks the best
+# available key in priority order (anthropic > openai > gemini), falling back to local
+# Ollama (llava) only when no cloud key is configured at all.
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "auto").strip().lower()
+
 
 def _detect_provider() -> str:
     """Detect which cloud provider to use based on which key is set."""
@@ -181,8 +192,44 @@ except ImportError:
 import urllib.request as _urllib_request
 
 _provider_clients = {}
-_token_tracker: dict = {"input": 0, "output": 0, "calls": 0, "last_model": ""}
-_gen_token_tracker: dict = {}  # gen_id -> {"input": int, "output": int, "calls": int}
+_token_tracker: dict = {"input": 0, "output": 0, "calls": 0, "last_model": "", "cost_usd": 0.0}
+_gen_token_tracker: dict = {}  # gen_id -> {"input": int, "output": int, "calls": int, "cost_start": float}
+
+# Approximate public list pricing, USD per 1M tokens (input, output). Matched by substring
+# against the model name rather than exact snapshot ID, since ANTHROPIC_MODEL/etc. env vars
+# can point at different dated snapshots of the same family. Local Ollama models are free.
+# Update these if provider pricing changes.
+_MODEL_PRICING = [
+    # (substring to match in model name, price_in_per_mtok, price_out_per_mtok)
+    ("opus",   15.00, 75.00),
+    ("sonnet",  3.00, 15.00),
+    ("haiku",   0.80,  4.00),
+    ("gpt-4o-mini", 0.15, 0.60),
+    ("gpt-4o",      2.50, 10.00),
+    ("gemini-1.5-flash", 0.075, 0.30),
+    ("gemini-1.5-pro",   1.25,  5.00),
+    ("gemini",           1.25,  5.00),  # fallback for other gemini variants
+]
+
+
+def _price_for_model(model: str) -> tuple[float, float]:
+    """Returns (price_in_per_mtok, price_out_per_mtok) for a model name, or (0,0) for
+    unrecognized/local models (Ollama)."""
+    name = (model or "").lower()
+    for substr, price_in, price_out in _MODEL_PRICING:
+        if substr in name:
+            return price_in, price_out
+    return 0.0, 0.0
+
+
+def _track_usage(model: str, input_tokens: int, output_tokens: int) -> None:
+    """Central place to update the global token/cost tracker for any provider call."""
+    price_in, price_out = _price_for_model(model)
+    _token_tracker["input"] += input_tokens
+    _token_tracker["output"] += output_tokens
+    _token_tracker["calls"] += 1
+    _token_tracker["last_model"] = model
+    _token_tracker["cost_usd"] += (input_tokens / 1_000_000) * price_in + (output_tokens / 1_000_000) * price_out
 
 def _get_anthropic():
     if "anthropic" not in _provider_clients:
@@ -212,7 +259,11 @@ def _call_ollama_sync(model: str, system: str, user: str) -> str:
             {"role": "user",   "content": user},
         ],
         "stream": False,
-        "options": {"temperature": 0.3, "num_predict": 8192},
+        # num_ctx must be set explicitly — Ollama otherwise silently caps the
+        # context window at 4096 tokens regardless of what the model supports,
+        # and design-system prompts (tokens + layout grammar + RAG context)
+        # routinely exceed that.
+        "options": {"temperature": 0.3, "num_predict": 8192, "num_ctx": 32768},
     }).encode("utf-8")
     req = _urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/chat", data=payload,
@@ -232,11 +283,7 @@ def _call_anthropic_sync(model: str, system: str, user: str) -> str:
         model=model, max_tokens=8192, system=system,
         messages=[{"role": "user", "content": user}],
     )
-    # Track token usage globally
-    _token_tracker["input"] += msg.usage.input_tokens
-    _token_tracker["output"] += msg.usage.output_tokens
-    _token_tracker["calls"] += 1
-    _token_tracker["last_model"] = model
+    _track_usage(model, msg.usage.input_tokens, msg.usage.output_tokens)
     return msg.content[0].text
 
 
@@ -249,6 +296,8 @@ def _call_openai_sync(model: str, system: str, user: str) -> str:
             {"role": "user", "content": user},
         ],
     )
+    if resp.usage:
+        _track_usage(model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
     return resp.choices[0].message.content
 
 
@@ -257,6 +306,8 @@ def _call_gemini_sync(model: str, system: str, user: str) -> str:
     from google.generativeai.types import GenerationConfig
     gmodel = genai.GenerativeModel(model, system_instruction=system)
     resp = gmodel.generate_content(user, generation_config=GenerationConfig(max_output_tokens=8192))
+    if getattr(resp, "usage_metadata", None):
+        _track_usage(model, resp.usage_metadata.prompt_token_count, resp.usage_metadata.candidates_token_count)
     return resp.text
 
 
@@ -1741,10 +1792,12 @@ async def upload_knowledge(
     async with aiofiles.open(str(file_path), "wb") as f:
         await f.write(content)
 
-    # Extract text — handwritten images go through LLava OCR
+    # Extract text — handwritten images go through vision OCR (best available backend,
+    # not necessarily Ollama — see resolve_vision_provider()).
     if is_handwritten == "true" and ext in ("png", "jpg", "jpeg", "webp"):
-        if not HAS_OLLAMA:
-            raise HTTPException(400, "Handwritten reading requires Ollama + llava:7b")
+        if resolve_vision_provider() == "none":
+            raise HTTPException(400, "Handwritten reading requires a configured vision "
+                                      "backend — set a cloud AI API key or run Ollama with llava.")
         b64 = base64.b64encode(content).decode("utf-8")
         text = await _extract_handwritten(b64)
     else:
@@ -2048,7 +2101,9 @@ def _vision_anthropic(b64_image: str, prompt: str) -> str:
 def _vision_openai(b64_image: str, prompt: str) -> str:
     client = _get_openai()
     resp = client.chat.completions.create(
-        model=PROVIDER_MODELS["openai"]["standard"], max_tokens=2048,
+        # 2048 was too low for full-screen HTML recreation (detailed tables/cards need
+        # more headroom) — matches the 8192 budget used for _vision_anthropic.
+        model=PROVIDER_MODELS["openai"]["standard"], max_tokens=8192,
         messages=[{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}},
@@ -2069,7 +2124,10 @@ def _vision_ollama(b64_image: str, prompt: str) -> str:
     payload = json.dumps({
         "model": OLLAMA_MODELS["vision"],
         "messages": [{"role": "user", "content": prompt, "images": [b64_image]}],
-        "stream": False, "options": {"temperature": 0.2, "num_predict": 2048},
+        # num_ctx set explicitly for the same reason as _call_ollama_sync — Ollama
+        # otherwise silently caps context at 4096 tokens, and an embedded image plus
+        # the detailed verbatim-transcription vision prompt can exceed that.
+        "stream": False, "options": {"temperature": 0.2, "num_predict": 2048, "num_ctx": 8192},
     }).encode("utf-8")
     req = _urllib_request.Request(
         f"{OLLAMA_BASE_URL}/api/chat", data=payload,
@@ -2083,24 +2141,77 @@ def _vision_ollama(b64_image: str, prompt: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-async def llm_chat_vision(b64_image: str, prompt: str) -> str:
-    """Vision call — uses cloud provider's vision model if available, else LLava."""
-    loop = asyncio.get_event_loop()
+_VISION_FN = {
+    "anthropic": _vision_anthropic,
+    "openai": _vision_openai,
+    "gemini": _vision_gemini,
+}
+_VISION_KEY = {
+    "anthropic": ANTHROPIC_API_KEY,
+    "openai": OPENAI_API_KEY,
+    "gemini": GEMINI_API_KEY,
+}
+_VISION_MODEL_NAME = {
+    "anthropic": lambda: PROVIDER_MODELS["anthropic"]["standard"],
+    "openai": lambda: PROVIDER_MODELS["openai"]["standard"],
+    "gemini": lambda: PROVIDER_MODELS["gemini"]["standard"],
+    "ollama": lambda: OLLAMA_MODELS["vision"],
+}
 
-    # Always try cloud vision first — it's dramatically better for design recreation
-    vision_fn = {
-        "anthropic": _vision_anthropic,
-        "openai": _vision_openai,
-        "gemini": _vision_gemini,
-    }.get(CLOUD_PROVIDER)
-    if vision_fn and ANTHROPIC_API_KEY:
-        try:
-            return await loop.run_in_executor(None, vision_fn, b64_image, prompt)
-        except Exception as e:
-            print(f"[vision] Cloud vision failed ({CLOUD_PROVIDER}): {e}")
-            # fall through to Ollama only if available
 
+def resolve_vision_provider() -> str:
+    """Which backend actually handles image analysis for this request — independent
+    of AI_BACKEND_MODE/CLOUD_PROVIDER (see the VISION_PROVIDER comment above). Purely
+    driven by which API keys are configured / whether Ollama is reachable; no
+    hardcoded provider choice."""
+    if VISION_PROVIDER in _VISION_FN and _VISION_KEY.get(VISION_PROVIDER):
+        return VISION_PROVIDER
+    if VISION_PROVIDER == "ollama" and HAS_OLLAMA:
+        return "ollama"
+    if VISION_PROVIDER != "auto":
+        print(f"[vision] VISION_PROVIDER={VISION_PROVIDER!r} requested but unavailable "
+              f"(no key / not reachable) — falling back to auto-detection.")
+
+    # auto: best available cloud key wins, in quality-priority order; local Ollama
+    # (llava) is the last resort, only used when no cloud key is configured at all.
+    for provider in ("anthropic", "openai", "gemini"):
+        if _VISION_KEY.get(provider):
+            return provider
     if HAS_OLLAMA:
+        return "ollama"
+    return "none"
+
+
+def vision_backend_label() -> str:
+    """Human-readable 'provider — model' string for progress/status messages, so the
+    UI always reflects the model that will actually run instead of a hardcoded name."""
+    provider = resolve_vision_provider()
+    if provider == "none":
+        return "no vision backend available"
+    try:
+        model = _VISION_MODEL_NAME[provider]()
+    except Exception:
+        model = provider
+    return f"{model} ({provider})"
+
+
+async def llm_chat_vision(b64_image: str, prompt: str) -> str:
+    """Vision call — routes independently to the best available vision backend (see
+    resolve_vision_provider), not tied to whatever AI_BACKEND_MODE governs text calls."""
+    loop = asyncio.get_event_loop()
+    provider = resolve_vision_provider()
+
+    if provider in _VISION_FN:
+        try:
+            return await loop.run_in_executor(None, _VISION_FN[provider], b64_image, prompt)
+        except Exception as e:
+            print(f"[vision] Cloud vision failed ({provider}): {e}")
+            # fall through to Ollama only if available
+            if HAS_OLLAMA:
+                return await loop.run_in_executor(None, _vision_ollama, b64_image, prompt)
+            return json.dumps({"error": f"Vision provider {provider} failed: {e}"})
+
+    if provider == "ollama" and HAS_OLLAMA:
         return await loop.run_in_executor(None, _vision_ollama, b64_image, prompt)
 
     return json.dumps({"error": "No vision backend available"})
@@ -2171,9 +2282,11 @@ async def analyst_research(
 
     tokens_before = _token_tracker["input"] + _token_tracker["output"]
     calls_before = _token_tracker["calls"]
+    cost_before = _token_tracker["cost_usd"]
     result = await _run()
     tokens_used = (_token_tracker["input"] + _token_tracker["output"]) - tokens_before
     calls_used = _token_tracker["calls"] - calls_before
+    cost_used = _token_tracker["cost_usd"] - cost_before
     return {
         "result": result,
         "research_type": research_type,
@@ -2184,6 +2297,7 @@ async def analyst_research(
             "input": _token_tracker["input"],
             "output": _token_tracker["output"],
             "calls": calls_used,
+            "cost_usd": round(cost_used, 4),
             "model": _token_tracker.get("last_model", select_model(6, "research")),
         },
     }
@@ -2688,6 +2802,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
         "input_start": _token_tracker["input"],
         "output_start": _token_tracker["output"],
         "calls_start": _token_tracker["calls"],
+        "cost_start": _token_tracker["cost_usd"],
     }
 
     async def progress(event: dict):
@@ -2698,6 +2813,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
             "calls": _token_tracker["calls"] - gen_snap.get("calls_start", 0),
             "total": (_token_tracker["input"] - gen_snap.get("input_start", 0)) +
                      (_token_tracker["output"] - gen_snap.get("output_start", 0)),
+            "cost_usd": round(_token_tracker["cost_usd"] - gen_snap.get("cost_start", 0.0), 4),
             "model": _token_tracker.get("last_model", ""),
         }
         if gen_id in _active_generations:
@@ -2720,6 +2836,7 @@ async def _run_plan(gen_id, session_id, prompt, design_system, fidelity,
             select_model=select_model,
             rag_query=rag_query,
             progress_callback=progress,
+            vision_backend_label=vision_backend_label(),
         )
 
         # Store plan in session + generation
@@ -2880,6 +2997,7 @@ async def _run_generate(gen_id, session_id, plan_payload, approved_ids, user_pro
         "input_start": _token_tracker["input"],
         "output_start": _token_tracker["output"],
         "calls_start": _token_tracker["calls"],
+        "cost_start": _token_tracker["cost_usd"],
     }
 
     async def progress(event: dict):
@@ -2891,6 +3009,7 @@ async def _run_generate(gen_id, session_id, plan_payload, approved_ids, user_pro
             "calls": _token_tracker["calls"] - gen_snap.get("calls_start", 0),
             "total": (_token_tracker["input"] - gen_snap.get("input_start", 0)) +
                      (_token_tracker["output"] - gen_snap.get("output_start", 0)),
+            "cost_usd": round(_token_tracker["cost_usd"] - gen_snap.get("cost_start", 0.0), 4),
             "model": _token_tracker.get("last_model", ""),
         }
         if gen_id in _active_generations:
@@ -3057,6 +3176,55 @@ async def _run_regenerate(gen_id, session_id, screen_id, existing, refinement, p
         await progress({"type": "error", "message": str(e)})
 
 
+class RestoreScreenVersionRequest(BaseModel):
+    session_id: str
+    screen_id: str
+    version: int
+
+
+@app.post("/api/v1/design/restore-screen-version", status_code=200)
+async def design_restore_screen_version(
+    req: RestoreScreenVersionRequest,
+    user: User = Depends(get_current_user),
+):
+    """Instantly restore a screen to a prior version's HTML from its own
+    refinement_history — no LLM call, purely deterministic. Recorded as a new
+    version entry (append-only), so nothing is lost even if you restore an old one."""
+    if req.session_id not in _design_sessions:
+        await _load_session(req.session_id)
+    session = _design_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    screens = session.get("screens", [])
+    screen = next((s for s in screens if s.get("screen_id") == req.screen_id), None)
+    if not screen:
+        raise HTTPException(404, "Screen not found in session")
+
+    history = list(screen.get("refinement_history") or [])
+    target = next((h for h in history if h.get("version") == req.version), None)
+    if not target:
+        raise HTTPException(404, f"Version {req.version} not found for this screen")
+
+    new_version = (screen.get("version", 1) or 1) + 1
+    now = datetime.now(timezone.utc).isoformat()
+    history.append({
+        "version": new_version,
+        "html": target["html"],
+        "instruction": None,
+        "change_summary": f"Restored from V{req.version}",
+        "created_at": now,
+    })
+
+    updated = {**screen, "html": target["html"], "version": new_version, "refinement_history": history}
+    for i, s in enumerate(screens):
+        if s.get("screen_id") == req.screen_id:
+            screens[i] = updated
+            break
+    await _persist_session(req.session_id)
+    return {"screen": updated}
+
+
 class ExportScreen(BaseModel):
     screen_id: str
     name: str
@@ -3105,23 +3273,30 @@ async def export_design(req: ExportRequest, user: User = Depends(get_current_use
         return {"format": "html", "filename": "core-studio-export.html", "content": html, "screen_count": len(screens)}
 
     elif req.format == "figma_json":
-        # Figma-plugin compatible payload (same shape V1 plugin used)
-        figma_screens = [
-            {
+        # Real auto-layout node tree (not a flat HTML dump) for the CORE Studio Figma
+        # plugin (packages/figma-plugin/) — built via html_to_figma_tree, which maps
+        # each screen's flexbox-based inline styles to Figma's official Plugin API
+        # properties (layoutMode, itemSpacing, padding*, alignment, sizing).
+        from app.design_system.figma_export import html_to_figma_tree
+
+        figma_screens = []
+        for s in screens:
+            try:
+                tree = html_to_figma_tree(s["html"])
+            except Exception as e:
+                tree = {"type": "FRAME", "layout": {"mode": "NONE"}, "style": {}, "children": [], "error": str(e)}
+            figma_screens.append({
                 "title": s["name"],
-                "background": "#FFFFFF",
-                "html": s["html"],
                 "width": 1440,
                 "height": 1024,
-            }
-            for s in screens
-        ]
+                "tree": tree,
+            })
         return {
             "format": "figma_json",
             "filename": "core-studio-figma.json",
-            "content": {"screens": figma_screens, "version": "2.0"},
+            "content": {"screens": figma_screens, "version": "3.0"},
             "screen_count": len(screens),
-            "instructions": "Import this JSON via the CORE Studio Figma plugin (Plugins → CORE Studio → Import).",
+            "instructions": "Open Figma → Plugins → CORE Studio Import → paste or load this JSON to build real auto-layout frames.",
         }
 
     raise HTTPException(400, "format must be 'html' or 'figma_json'")
@@ -3172,8 +3347,9 @@ async def generate_design_flow(
     # Process optional reference image
     image_b64 = None
     if image is not None:
-        if not HAS_OLLAMA:
-            raise HTTPException(400, "Vision requires Ollama with llava:7b")
+        if resolve_vision_provider() == "none":
+            raise HTTPException(400, "Reading a reference image requires a configured vision "
+                                      "backend — set a cloud AI API key or run Ollama with llava.")
         ext = image.filename.rsplit(".", 1)[-1].lower() if "." in image.filename else "png"
         if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
             raise HTTPException(400, f"Image format .{ext} not supported")
@@ -3629,7 +3805,11 @@ async def ai_status(user: User = Depends(get_current_user)):
             "ollama": HAS_OLLAMA,
         },
         "active_models": CLOUD_MODELS if AI_BACKEND == "cloud" else OLLAMA_MODELS,
-        "vision_enabled": AI_BACKEND == "cloud" or HAS_OLLAMA,
+        # Vision (image analysis for "recreate"/"redesign") is resolved independently of
+        # AI_BACKEND_MODE above — see resolve_vision_provider() / VISION_PROVIDER env var.
+        "vision_enabled": resolve_vision_provider() != "none",
+        "vision_provider": resolve_vision_provider(),
+        "vision_backend": vision_backend_label(),
     }
 
 
@@ -3637,15 +3817,14 @@ async def ai_status(user: User = Depends(get_current_user)):
 async def get_token_usage(user: User = Depends(get_current_user)):
     """Return cumulative token usage for this server session."""
     total = _token_tracker["input"] + _token_tracker["output"]
-    # Rough cost estimate for Anthropic Sonnet 4.6: $3/M input, $15/M output
-    cost = (_token_tracker["input"] / 1_000_000 * 3.0) + (_token_tracker["output"] / 1_000_000 * 15.0)
     return {
         "input_tokens": _token_tracker["input"],
         "output_tokens": _token_tracker["output"],
         "total_tokens": total,
         "api_calls": _token_tracker["calls"],
         "last_model": _token_tracker["last_model"],
-        "estimated_cost_usd": round(cost, 4),
+        # Tracked per-call, per-model (see _track_usage) — not a flat single-model estimate.
+        "estimated_cost_usd": round(_token_tracker["cost_usd"], 4),
     }
 
 
