@@ -1517,15 +1517,25 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     Path("./uploads/knowledge").mkdir(parents=True, exist_ok=True)
-    # Seed knowledge/ folder into ChromaDB on startup (idempotent — uses upsert)
-    try:
-        seeded = await seed_knowledge_from_files()
-        if seeded:
-            print(f"   📚 Knowledge base seeded — {seeded} chunks indexed from knowledge/")
-        else:
-            print("   📚 Knowledge base: no new files to seed")
-    except Exception as e:
-        print(f"   ⚠️  Knowledge seeding failed: {e}")
+
+    # Seed knowledge/ folder into ChromaDB — fire-and-forget in the background, NOT
+    # awaited here. This can take a while on a cold instance (first-run downloads a
+    # ~79MB ONNX embedding model, then embeds thousands of chunks) — awaiting it
+    # blocked the ASGI server from ever binding its port on resource-constrained
+    # hosts (observed on Render's free tier: ~2min for something local dev does in
+    # a few seconds), causing platform health checks to time the deploy out entirely.
+    # RAG/knowledge features simply become available a few seconds after startup
+    # instead of gating the whole app on them.
+    async def _seed_knowledge_background():
+        try:
+            seeded = await seed_knowledge_from_files()
+            if seeded:
+                print(f"   📚 Knowledge base seeded — {seeded} chunks indexed from knowledge/")
+            else:
+                print("   📚 Knowledge base: no new files to seed")
+        except Exception as e:
+            print(f"   ⚠️  Knowledge seeding failed: {e}")
+    asyncio.create_task(_seed_knowledge_background())
     # Reload recent sessions into memory so they survive restarts
     try:
         async with AsyncSessionLocal() as db:
