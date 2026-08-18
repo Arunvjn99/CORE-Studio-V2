@@ -1518,17 +1518,25 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     Path("./uploads/knowledge").mkdir(parents=True, exist_ok=True)
 
-    # Seed knowledge/ folder into ChromaDB — fire-and-forget in the background, NOT
-    # awaited here. This can take a while on a cold instance (first-run downloads a
-    # ~79MB ONNX embedding model, then embeds thousands of chunks) — awaiting it
-    # blocked the ASGI server from ever binding its port on resource-constrained
-    # hosts (observed on Render's free tier: ~2min for something local dev does in
-    # a few seconds), causing platform health checks to time the deploy out entirely.
-    # RAG/knowledge features simply become available a few seconds after startup
-    # instead of gating the whole app on them.
+    # Seed knowledge/ folder into ChromaDB in a background THREAD, not just a background
+    # asyncio task. seed_knowledge_from_files()/rag_add()/_get_chroma() are `async def`
+    # but do genuinely blocking work underneath (chromadb's sync client, plus a first-run
+    # ~79MB ONNX embedding-model download) — plain asyncio.create_task() still hogs the
+    # single-threaded event loop for the whole duration once it runs, freezing the ASGI
+    # server (no requests served, including health checks) exactly as if it had been
+    # awaited directly. run_in_executor moves that blocking work to a real OS thread so
+    # the event loop stays free to serve requests concurrently while it runs.
+    def _seed_knowledge_sync() -> int:
+        seed_loop = asyncio.new_event_loop()
+        try:
+            return seed_loop.run_until_complete(seed_knowledge_from_files())
+        finally:
+            seed_loop.close()
+
     async def _seed_knowledge_background():
         try:
-            seeded = await seed_knowledge_from_files()
+            loop = asyncio.get_event_loop()
+            seeded = await loop.run_in_executor(None, _seed_knowledge_sync)
             if seeded:
                 print(f"   📚 Knowledge base seeded — {seeded} chunks indexed from knowledge/")
             else:
