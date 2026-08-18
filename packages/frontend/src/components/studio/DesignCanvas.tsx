@@ -1,8 +1,16 @@
 "use client";
 import { useRef, useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Maximize2, Code, RefreshCw, X, Monitor, Smartphone, Tablet } from "lucide-react";
+import { Loader2, Maximize2, Code, RefreshCw, Pencil, X, Monitor, Smartphone, Tablet } from "lucide-react";
 import { cn } from "@/lib/utils/cn";
+
+export interface ScreenVersionEntry {
+  version: number;
+  html: string;
+  instruction: string | null;
+  change_summary: string;
+  created_at: string;
+}
 
 export interface CanvasScreen {
   screen_id: string;
@@ -14,6 +22,7 @@ export interface CanvasScreen {
   screen_type?: string;  // mobile | tablet | web_dashboard | website | desktop_app
   canvas_size?: { width: number; height: number };
   model_used?: string;
+  refinement_history?: ScreenVersionEntry[];
   x?: number;
   y?: number;
 }
@@ -41,6 +50,7 @@ interface Props {
   onSelectScreen?: (screen: CanvasScreen) => void;
   onRegenerateScreen?: (screen: CanvasScreen) => void;
   onViewCode?: (screen: CanvasScreen) => void;
+  onEditScreen?: (screen: CanvasScreen) => void;
   selectedScreenId?: string | null;
 }
 
@@ -48,7 +58,7 @@ const GAP = 80;
 
 export function DesignCanvas({
   screens, generatingScreens = [], device, forceDevice = false,
-  onSelectScreen, onRegenerateScreen, onViewCode, selectedScreenId,
+  onSelectScreen, onRegenerateScreen, onViewCode, onEditScreen, selectedScreenId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState({ x: 100, y: 80, scale: 0.7 });
@@ -211,6 +221,11 @@ export function DesignCanvas({
                     className="w-6 h-6 rounded-md bg-white border border-gray-200 flex items-center justify-center hover:bg-gray-50 shadow-sm"
                     title="Refine screen"
                   ><RefreshCw className="w-3 h-3 text-gray-500" /></button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onEditScreen?.(screen); }}
+                    className="w-6 h-6 rounded-md bg-white border border-gray-200 flex items-center justify-center hover:bg-gray-50 shadow-sm"
+                    title="Edit screen (with version history)"
+                  ><Pencil className="w-3 h-3 text-gray-500" /></button>
                 </div>
               </div>
 

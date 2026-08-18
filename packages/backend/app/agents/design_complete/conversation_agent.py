@@ -11,6 +11,7 @@ RAG is queried on every step.
 """
 import json
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -534,18 +535,39 @@ async def regenerate_screen(
     )
 
     new_version = (existing_screen.get("version", 1) or 1) + 1
+    new_html = screen_result.get("html", existing_screen.get("html", ""))
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Version history is append-only and carries a full HTML snapshot per version, so the
+    # UI can list V1/V2/... and restore any of them — not just a log of instructions.
+    # The "why" for each version is simply the refinement instruction that produced it
+    # (the user's own words), never a hardcoded/fabricated summary.
+    history = list(existing_screen.get("refinement_history") or [])
+    if not history:
+        # First refinement — retroactively seed the original as V(existing).
+        history.append({
+            "version": existing_screen.get("version", 1) or 1,
+            "html": existing_screen.get("html", ""),
+            "instruction": None,
+            "change_summary": "Initial generation",
+            "created_at": existing_screen.get("created_at") or now,
+        })
+    history.append({
+        "version": new_version,
+        "html": new_html,
+        "instruction": refinement_instruction,
+        "change_summary": refinement_instruction,
+        "created_at": now,
+    })
 
     return {
         **existing_screen,
-        "html": screen_result.get("html", existing_screen.get("html", "")),
+        "html": new_html,
         "design_notes": screen_result.get("design_notes", ""),
         "components_used": screen_result.get("components_used", []),
         "model_used": screen_result.get("model_used", ""),
         "version": new_version,
-        "refinement_history": (existing_screen.get("refinement_history") or []) + [{
-            "from_version": existing_screen.get("version", 1),
-            "instruction": refinement_instruction,
-        }],
+        "refinement_history": history,
     }
 
 

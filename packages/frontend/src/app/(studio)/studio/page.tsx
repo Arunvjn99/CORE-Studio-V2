@@ -7,11 +7,12 @@ import {
   Send, Sparkles, Wand2, Box, Palette, Check, Loader2,
   Smartphone, Monitor, Tablet, X, Code, ChevronDown, Plus,
   Download, Share2, FileCode, Cloud, Cpu, Zap, ShieldCheck,
-  AlertTriangle, CheckCircle2, BarChart2, Layers, Info
+  AlertTriangle, CheckCircle2, BarChart2, Layers, Info,
+  Pencil, History, RotateCcw
 } from "lucide-react";
 import { api } from "@/lib/api/client";
 import { cn } from "@/lib/utils/cn";
-import { DesignCanvas, CanvasScreen } from "@/components/studio/DesignCanvas";
+import { DesignCanvas, CanvasScreen, ScreenVersionEntry } from "@/components/studio/DesignCanvas";
 import { AgentPanel, AgentStep, PlannedScreen } from "@/components/studio/AgentPanel";
 
 interface TokenUsage {
@@ -85,6 +86,9 @@ export default function StudioPage() {
   const [generatingNames, setGeneratingNames] = useState<string[]>([]);
   const [selectedScreen, setSelectedScreen] = useState<CanvasScreen | null>(null);
   const [codeScreen, setCodeScreen] = useState<CanvasScreen | null>(null);
+  const [editScreen, setEditScreen] = useState<CanvasScreen | null>(null);
+  const [editInstruction, setEditInstruction] = useState("");
+  const [editPreviewVersion, setEditPreviewVersion] = useState<ScreenVersionEntry | null>(null);
 
   // Token tracking + compliance
   const [liveTokens, setLiveTokens] = useState<TokenUsage | null>(null);
@@ -185,6 +189,8 @@ export default function StudioPage() {
         case "screen_regenerated":
           if (ev.screen) {
             setScreens(prev => prev.map(s => s.screen_id === ev.screen.screen_id ? ev.screen : s));
+            setEditScreen(prev => (prev && prev.screen_id === ev.screen.screen_id) ? ev.screen : prev);
+            setEditPreviewVersion(null);
             toast.success(ev.message);
           }
           break;
@@ -292,6 +298,34 @@ export default function StudioPage() {
   const handleRegenerate = (screen: CanvasScreen) => {
     const refinement = window.prompt(`How should I refine "${screen.name}"?`, "Improve the visual hierarchy and spacing");
     if (refinement) regenMutation.mutate({ screenId: screen.screen_id, refinement });
+  };
+
+  // ── Edit modal (scoped to one screen, with version history) ────────────────
+  const openEditModal = (screen: CanvasScreen) => {
+    setEditScreen(screen);
+    setEditInstruction("");
+    setEditPreviewVersion(null);
+  };
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ screenId, version }: { screenId: string; version: number }) =>
+      api.post("/design/restore-screen-version", {
+        session_id: sessionId,
+        screen_id: screenId,
+        version,
+      }).then(r => r.data),
+    onSuccess: (data) => {
+      setScreens(prev => prev.map(s => s.screen_id === data.screen.screen_id ? data.screen : s));
+      setEditScreen(data.screen);
+      setEditPreviewVersion(null);
+      toast.success("Version restored");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || "Restore failed"),
+  });
+
+  const handleEditGenerate = () => {
+    if (!editScreen || !editInstruction.trim()) return;
+    regenMutation.mutate({ screenId: editScreen.screen_id, refinement: editInstruction.trim() });
   };
 
   // ── Export ─────────────────────────────────────────────────────────────────
@@ -750,6 +784,7 @@ export default function StudioPage() {
               onSelectScreen={setSelectedScreen}
               onRegenerateScreen={handleRegenerate}
               onViewCode={setCodeScreen}
+              onEditScreen={openEditModal}
             />
           )}
         </div>
@@ -901,6 +936,147 @@ export default function StudioPage() {
             </motion.div>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      {/* Edit modal — scoped to one screen, with version history */}
+      <AnimatePresence>
+        {editScreen && (() => {
+          const isRegenerating = regenMutation.isPending && regenMutation.variables?.screenId === editScreen.screen_id;
+          const isRestoring = restoreMutation.isPending;
+          const versions: ScreenVersionEntry[] = [
+            ...(editScreen.refinement_history || []),
+            // Current live version, if not already the tail of history (covers screens that
+            // haven't been refined yet — history is empty, so this is the only entry).
+            ...(editScreen.refinement_history?.some(v => v.version === (editScreen.version || 1))
+              ? []
+              : [{
+                  version: editScreen.version || 1,
+                  html: editScreen.html,
+                  instruction: null,
+                  change_summary: "Initial generation",
+                  created_at: "",
+                }]),
+          ].sort((a, b) => a.version - b.version);
+          const preview = editPreviewVersion;
+          const previewHtml = preview ? preview.html : editScreen.html;
+          const isLatest = !preview || preview.version === (editScreen.version || 1);
+
+          return (
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-8"
+              onClick={() => setEditScreen(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }}
+                className="bg-white rounded-xl overflow-hidden max-w-5xl w-full max-h-[85vh] flex flex-col"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Pencil className="w-4 h-4 text-violet-600" />
+                    <span className="text-sm font-semibold text-gray-800">Edit — {editScreen.name}</span>
+                    <span className="text-[10px] font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded">
+                      V{editScreen.version || 1}
+                    </span>
+                  </div>
+                  <button onClick={() => setEditScreen(null)} className="text-gray-400 hover:text-gray-700">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex flex-1 min-h-0">
+                  {/* Version history rail */}
+                  <div className="w-56 border-r border-gray-200 overflow-y-auto flex-shrink-0 bg-gray-50">
+                    <div className="px-3 py-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-1">
+                      <History className="w-3 h-3" /> Version history
+                    </div>
+                    {versions.slice().reverse().map(v => {
+                      const isSelected = preview ? preview.version === v.version : v.version === (editScreen.version || 1);
+                      return (
+                        <button
+                          key={v.version}
+                          onClick={() => setEditPreviewVersion(v.version === (editScreen.version || 1) ? null : v)}
+                          className={cn(
+                            "w-full text-left px-3 py-2 border-b border-gray-100 hover:bg-violet-50 transition-colors",
+                            isSelected && "bg-violet-100"
+                          )}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-violet-700">V{v.version}</span>
+                            {v.version === (editScreen.version || 1) && (
+                              <span className="text-[9px] bg-green-100 text-green-700 px-1 rounded">latest</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-600 mt-0.5 line-clamp-2">{v.change_summary}</p>
+                          {v.created_at && (
+                            <p className="text-[10px] text-gray-400 mt-0.5">
+                              {new Date(v.created_at).toLocaleString()}
+                            </p>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Preview + instruction */}
+                  <div className="flex-1 flex flex-col min-w-0">
+                    <div className="flex-1 overflow-auto bg-gray-100 p-4">
+                      {!isLatest && (
+                        <div className="mb-2 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                          <span className="text-xs text-amber-800">
+                            Previewing V{preview!.version} — {preview!.change_summary}
+                          </span>
+                          <button
+                            onClick={() => restoreMutation.mutate({ screenId: editScreen.screen_id, version: preview!.version })}
+                            disabled={isRestoring}
+                            className="text-xs font-semibold text-amber-800 hover:text-amber-950 flex items-center gap-1 disabled:opacity-50"
+                          >
+                            {isRestoring ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                            Restore this version
+                          </button>
+                        </div>
+                      )}
+                      <div className="bg-white rounded-lg shadow-sm overflow-hidden mx-auto" style={{ maxWidth: 900 }}>
+                        <iframe
+                          srcDoc={previewHtml}
+                          className="w-full border-0"
+                          style={{ height: 560 }}
+                          title="Screen preview"
+                          sandbox="allow-same-origin allow-scripts"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-200 p-3 flex-shrink-0">
+                      <textarea
+                        value={editInstruction}
+                        onChange={e => setEditInstruction(e.target.value)}
+                        placeholder={`Describe the change to make to "${editScreen.name}" — e.g. "Increase card spacing and make the primary button more prominent"`}
+                        rows={3}
+                        className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-violet-300"
+                        disabled={isRegenerating}
+                      />
+                      <div className="flex items-center justify-between mt-2">
+                        <span className="text-[11px] text-gray-400">
+                          Changes apply only to this screen — other screens are unaffected.
+                        </span>
+                        <button
+                          onClick={handleEditGenerate}
+                          disabled={!editInstruction.trim() || isRegenerating}
+                          className="flex items-center gap-1.5 bg-violet-600 text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isRegenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                          {isRegenerating ? "Generating..." : "Generate"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

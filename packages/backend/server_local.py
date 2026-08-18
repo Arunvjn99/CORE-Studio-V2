@@ -3176,6 +3176,55 @@ async def _run_regenerate(gen_id, session_id, screen_id, existing, refinement, p
         await progress({"type": "error", "message": str(e)})
 
 
+class RestoreScreenVersionRequest(BaseModel):
+    session_id: str
+    screen_id: str
+    version: int
+
+
+@app.post("/api/v1/design/restore-screen-version", status_code=200)
+async def design_restore_screen_version(
+    req: RestoreScreenVersionRequest,
+    user: User = Depends(get_current_user),
+):
+    """Instantly restore a screen to a prior version's HTML from its own
+    refinement_history — no LLM call, purely deterministic. Recorded as a new
+    version entry (append-only), so nothing is lost even if you restore an old one."""
+    if req.session_id not in _design_sessions:
+        await _load_session(req.session_id)
+    session = _design_sessions.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    screens = session.get("screens", [])
+    screen = next((s for s in screens if s.get("screen_id") == req.screen_id), None)
+    if not screen:
+        raise HTTPException(404, "Screen not found in session")
+
+    history = list(screen.get("refinement_history") or [])
+    target = next((h for h in history if h.get("version") == req.version), None)
+    if not target:
+        raise HTTPException(404, f"Version {req.version} not found for this screen")
+
+    new_version = (screen.get("version", 1) or 1) + 1
+    now = datetime.now(timezone.utc).isoformat()
+    history.append({
+        "version": new_version,
+        "html": target["html"],
+        "instruction": None,
+        "change_summary": f"Restored from V{req.version}",
+        "created_at": now,
+    })
+
+    updated = {**screen, "html": target["html"], "version": new_version, "refinement_history": history}
+    for i, s in enumerate(screens):
+        if s.get("screen_id") == req.screen_id:
+            screens[i] = updated
+            break
+    await _persist_session(req.session_id)
+    return {"screen": updated}
+
+
 class ExportScreen(BaseModel):
     screen_id: str
     name: str
