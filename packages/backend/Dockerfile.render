@@ -4,9 +4,15 @@
 # Dockerfile (which builds app/main.py against Postgres/Redis for the docker-compose
 # stack) so neither deployment path disturbs the other.
 #
-# Render free-tier disk is ephemeral — the SQLite file resets on each redeploy/restart.
-# For persistent data, swap DATABASE_URL-style storage in server_local.py for the
-# Postgres instance already provisioned alongside this service, or attach a Render Disk.
+# Built from the REPO ROOT as build context (not packages/backend) so the top-level
+# knowledge/ folder is available inside the image — server_local.py resolves it as
+# BASE_DIR.parent.parent / "knowledge", i.e. two directories up from server_local.py,
+# so the container mirrors the monorepo's packages/backend + knowledge/ layout exactly.
+#
+# Render free-tier disk is ephemeral — the SQLite file and the seeded ChromaDB store
+# reset on each redeploy/restart. For persistent data, swap DATABASE_URL-style storage
+# in server_local.py for the Postgres instance already provisioned alongside this
+# service, or attach a Render Disk.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -15,10 +21,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-local.txt .
-RUN pip install --no-cache-dir -r requirements-local.txt
+COPY packages/backend/requirements-local.txt ./packages/backend/requirements-local.txt
+RUN pip install --no-cache-dir -r packages/backend/requirements-local.txt
 
-COPY . .
+COPY packages/backend ./packages/backend
+COPY knowledge ./knowledge
+
+WORKDIR /app/packages/backend
 
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn server_local:app --host 0.0.0.0 --port ${PORT:-8000}"]
